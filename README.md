@@ -1,5 +1,8 @@
 # Web Broadcaster
 
+<img width="887" height="477" alt="web_broadcaster_small" src="https://github.com/user-attachments/assets/c430886a-6fe1-4346-be73-a8d22036a16e" />
+
+
 **Web Broadcaster** is a self-contained, browser-operated, multi-station radio automation and Icecast broadcasting system for Linux.
 
 The project combines a Python/Flask control application with a dedicated native C audio daemon. The Python application owns the web interface, station configuration, SQLite persistence, queue management, AutoDJ, scheduling, history, user management and runtime orchestration. The native daemon owns the real-time audio path: direct FFmpeg/libav decoding, A/B decks, cueing, seeking, fades, transitions, mixing, in-process SoundSolution DSP, encoding and Icecast transport.
