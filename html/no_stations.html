@@ -1,0 +1,314 @@
+{% extends "base.html" %}
+
+{% block body_class %}studio-body{% endblock %}
+{% block container_class %}studio-container studio-dashboard-container{% endblock %}
+{% block extra_head %}
+<link href="{{ url_for('static', filename='broadcaster.css') }}" rel="stylesheet">
+<style>
+.no-stations-shell{min-height:calc(100vh - 120px);display:flex;align-items:center;justify-content:center;padding:32px 16px}
+.no-stations-card{width:min(560px,100%);background:rgba(15,23,42,.92);border:1px solid rgba(148,163,184,.18);border-radius:20px;box-shadow:0 24px 64px rgba(2,6,23,.38);padding:32px;text-align:center}
+.no-stations-title{margin:0 0 12px;font-size:32px;font-weight:800;color:#f8fafc}
+.no-stations-text{margin:0 0 24px;color:#cbd5e1;font-size:15px;line-height:1.6}
+.no-stations-actions{display:flex;justify-content:center;gap:12px;flex-wrap:wrap}
+.no-stations-btn{display:inline-flex;align-items:center;justify-content:center;min-width:220px;height:46px;padding:0 18px;border-radius:12px;border:1px solid rgba(191,219,254,.28);background:linear-gradient(180deg,#4f93ff 0%, #3b82f6 100%);color:#fff;text-decoration:none;font-weight:700;box-shadow:0 12px 28px rgba(59,130,246,.24);cursor:pointer}
+.no-stations-btn:hover{filter:brightness(1.05)}
+.no-stations-hint{margin-top:16px;color:#94a3b8;font-size:13px}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="no-stations-shell">
+    <div class="no-stations-card">
+        <h1 class="no-stations-title">Add your first station</h1>
+        <p class="no-stations-text">No stations have been created yet. Create the first station now, then the app will open the Broadcaster view for it automatically.</p>
+        <div class="no-stations-actions">
+            <button type="button" id="studio-add-station-open" class="no-stations-btn">Add New Station</button>
+        </div>
+        <div class="no-stations-hint">This screen is shown automatically after the first login when the database is still empty.</div>
+    </div>
+</div>
+
+<div id="studio-add-station-backdrop" class="modal-backdrop" aria-hidden="true">
+  <div class="modal modal--studio-station" role="dialog" aria-modal="true" aria-labelledby="studio-add-station-title">
+    <div class="panel-titlebar studio-floating-window__titlebar modal-titlebar modal-titlebar--studio-station" id="studio-add-station-titlebar">
+      <span id="studio-add-station-title">Add New Station</span>
+      <button type="button" id="studio-add-station-close" class="studio-window-close" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body modal-body--studio-station">
+      <form id="studio-add-station-form" class="studio-station-form">
+        <label class="studio-station-field">
+          <span>Radio name</span>
+          <input type="text" name="radio_name" value="{{ new_station_defaults.radio_name }}" autocomplete="off">
+        </label>
+        <div class="studio-station-section-title">Station Settings</div>
+        <label class="studio-station-field">
+          <span>Base music directory</span>
+          <input type="text" name="music_library_path" value="{{ new_station_defaults.music_library_path }}" autocomplete="off">
+        </label>
+        <div class="studio-station-section-title studio-soundsolution-title-row">
+          <span>SoundSolution Settings (DSP Sound Processor)</span>
+          <label class="studio-soundsolution-checkbox" aria-label="Enable DSP Sound Processor">
+            <input type="checkbox" name="soundsolution_enabled" {{ "checked" if (new_station_defaults.dsp_enabled if new_station_defaults and new_station_defaults.dsp_enabled is not none else 1) else "" }}>
+            <span>Enable DSP</span>
+          </label>
+        </div>
+        <label class="studio-station-field">
+          <span>SoundSolution .dat configuration (Change only if necessary)</span>
+          <input type="text" name="soundsolution_path" value="{{ new_station_defaults.soundsolution_path }}" autocomplete="off">
+        </label>
+      </form>
+      <div id="studio-add-station-error" class="studio-station-error" style="display:none;"></div>
+    </div>
+    <div class="modal-actions modal-actions--studio-station">
+      <button type="button" id="studio-add-station-save" class="modal-btn modal-primary">Add New Station</button>
+      <button type="button" id="studio-add-station-cancel" class="modal-btn modal-secondary">Cancel</button>
+    </div>
+    <div class="panel-resize-handle" aria-hidden="true"></div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  const addStationEls = {
+    open: document.getElementById("studio-add-station-open"),
+    backdrop: document.getElementById("studio-add-station-backdrop"),
+    form: document.getElementById("studio-add-station-form"),
+    save: document.getElementById("studio-add-station-save"),
+    close: document.getElementById("studio-add-station-close"),
+    cancel: document.getElementById("studio-add-station-cancel"),
+    error: document.getElementById("studio-add-station-error")
+  };
+
+  function openAddStationModal(){
+    if (!addStationEls.backdrop) return;
+    addStationEls.backdrop.classList.add("active");
+    addStationEls.backdrop.setAttribute("aria-hidden", "false");
+    document.body.classList.add("modal-open");
+    if (addStationEls.error) {
+      addStationEls.error.textContent = "";
+      addStationEls.error.style.display = "none";
+    }
+    const firstInput = addStationEls.form ? addStationEls.form.querySelector('input[name="radio_name"]') : null;
+    if (firstInput) window.setTimeout(function(){ firstInput.focus(); }, 0);
+  }
+
+  function closeAddStationModal(){
+    if (!addStationEls.backdrop) return;
+    addStationEls.backdrop.classList.remove("active");
+    addStationEls.backdrop.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("modal-open");
+  }
+
+  function setAddStationError(message){
+    if (!addStationEls.error) return;
+    addStationEls.error.textContent = message || "";
+    addStationEls.error.style.display = message ? "block" : "none";
+  }
+
+  async function submitAddStation(){
+    if (!addStationEls.form || !addStationEls.save) return;
+    const formData = new FormData(addStationEls.form);
+    const payload = Object.fromEntries(formData.entries());
+    addStationEls.save.disabled = true;
+    setAddStationError("");
+    try {
+      const response = await fetch("/api/studio/stations/create", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+      const data = await response.json().catch(function(){ return null; });
+      if (!response.ok || !data || !data.ok) {
+        setAddStationError((data && data.error) || "Failed to create station.");
+        return;
+      }
+      closeAddStationModal();
+      if (data.redirect) {
+        window.location.href = data.redirect;
+        return;
+      }
+      window.location.reload();
+    } catch (error) {
+      setAddStationError("Failed to create station.");
+    } finally {
+      addStationEls.save.disabled = false;
+    }
+  }
+
+  (function setupAddStationModalDrag(){
+    const backdrop = addStationEls.backdrop;
+    const modal = backdrop ? backdrop.querySelector('.modal--studio-station') : null;
+    const titlebar = document.getElementById('studio-add-station-titlebar') || (backdrop ? backdrop.querySelector('.modal-titlebar--studio-station') : null);
+    const handle = modal ? modal.querySelector('.panel-resize-handle') : null;
+    if (!backdrop || !modal || !titlebar) return;
+    let dragState = null;
+    let resizeState = null;
+    let suppressBackdropClickUntil = 0;
+
+    function getModalRect(){
+      const rect = modal.getBoundingClientRect();
+      return {
+        width: modal.offsetWidth || rect.width || 760,
+        height: modal.offsetHeight || rect.height || 560
+      };
+    }
+
+    function clampModalRect(left, top, width, height){
+      const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1280;
+      const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 720;
+      const computed = window.getComputedStyle(modal);
+      const minWidth = Math.max(360, Number.parseFloat(computed.minWidth) || 0);
+      const minHeight = Math.max(260, Number.parseFloat(computed.minHeight) || 0);
+      const maxWidth = Math.max(minWidth, Math.min(viewportWidth - 16, Number.parseFloat(computed.maxWidth) || viewportWidth - 16));
+      const maxHeight = Math.max(minHeight, Math.min(viewportHeight - 16, Number.parseFloat(computed.maxHeight) || viewportHeight - 16));
+      const clampedWidth = Math.max(minWidth, Math.min(maxWidth, Number.isFinite(width) ? width : getModalRect().width));
+      const clampedHeight = Math.max(minHeight, Math.min(maxHeight, Number.isFinite(height) ? height : getModalRect().height));
+      const minLeft = 12;
+      const minTop = 8;
+      const maxLeft = Math.max(minLeft, viewportWidth - clampedWidth - 12);
+      const maxTop = Math.max(minTop, viewportHeight - clampedHeight - 12);
+      return {
+        left: Math.max(minLeft, Math.min(maxLeft, left)),
+        top: Math.max(minTop, Math.min(maxTop, top)),
+        width: clampedWidth,
+        height: clampedHeight
+      };
+    }
+
+    function applyModalRect(left, top, width, height){
+      const rect = clampModalRect(left, top, width, height);
+      modal.style.left = rect.left + 'px';
+      modal.style.top = rect.top + 'px';
+      modal.style.width = rect.width + 'px';
+      modal.style.height = rect.height + 'px';
+      modal.style.right = 'auto';
+      modal.style.bottom = 'auto';
+      modal.style.margin = '0';
+      modal.style.transform = 'none';
+    }
+
+    function resetModalPosition(){
+      const rect = getModalRect();
+      applyModalRect(Math.round((window.innerWidth - rect.width) / 2), 8, rect.width, rect.height);
+    }
+
+    const originalOpen = openAddStationModal;
+    openAddStationModal = function(){
+      originalOpen();
+      window.setTimeout(resetModalPosition, 0);
+    };
+
+    function onPointerMove(event){
+      if (dragState) {
+        applyModalRect(
+          dragState.startLeft + (event.clientX - dragState.startClientX),
+          dragState.startTop + (event.clientY - dragState.startClientY),
+          dragState.width,
+          dragState.height
+        );
+        dragState.moved = true;
+      } else if (resizeState) {
+        applyModalRect(
+          resizeState.left,
+          resizeState.top,
+          resizeState.startWidth + (event.clientX - resizeState.startClientX),
+          resizeState.startHeight + (event.clientY - resizeState.startClientY)
+        );
+        resizeState.moved = true;
+      }
+    }
+
+    function endPointerInteraction(){
+      const moved = !!((dragState && dragState.moved) || (resizeState && resizeState.moved));
+      dragState = null;
+      resizeState = null;
+      modal.classList.remove('is-dragging');
+      modal.classList.remove('is-resizing');
+      document.removeEventListener('pointermove', onPointerMove);
+      document.removeEventListener('pointerup', endPointerInteraction);
+      document.removeEventListener('pointercancel', endPointerInteraction);
+      if (moved) suppressBackdropClickUntil = Date.now() + 250;
+    }
+
+    titlebar.addEventListener('pointerdown', event => {
+      if (event.button !== 0) return;
+      if (event.target.closest('button, a, input, select, textarea')) return;
+      event.preventDefault();
+      const rect = modal.getBoundingClientRect();
+      dragState = {
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        startLeft: Number.parseFloat(modal.style.left) || rect.left,
+        startTop: Number.parseFloat(modal.style.top) || rect.top,
+        width: modal.offsetWidth || rect.width,
+        height: modal.offsetHeight || rect.height,
+        moved: false
+      };
+      modal.classList.add('is-dragging');
+      document.addEventListener('pointermove', onPointerMove);
+      document.addEventListener('pointerup', endPointerInteraction);
+      document.addEventListener('pointercancel', endPointerInteraction);
+    });
+
+    if (handle){
+      handle.addEventListener('pointerdown', event => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const rect = modal.getBoundingClientRect();
+        resizeState = {
+          startClientX: event.clientX,
+          startClientY: event.clientY,
+          left: Number.parseFloat(modal.style.left) || rect.left,
+          top: Number.parseFloat(modal.style.top) || rect.top,
+          startWidth: modal.offsetWidth || rect.width,
+          startHeight: modal.offsetHeight || rect.height,
+          moved: false
+        };
+        modal.classList.add('is-resizing');
+        document.addEventListener('pointermove', onPointerMove);
+        document.addEventListener('pointerup', endPointerInteraction);
+        document.addEventListener('pointercancel', endPointerInteraction);
+      });
+    }
+
+    backdrop.addEventListener('click', event => {
+      if (event.target !== backdrop) return;
+      if (dragState || resizeState || Date.now() < suppressBackdropClickUntil) return;
+      closeAddStationModal();
+    }, true);
+
+    window.addEventListener('resize', () => {
+      if (!backdrop.classList.contains('active')) return;
+      const rect = getModalRect();
+      const left = Number.parseFloat(modal.style.left);
+      const top = Number.parseFloat(modal.style.top);
+      if (!Number.isFinite(left) || !Number.isFinite(top)) {
+        resetModalPosition();
+        return;
+      }
+      applyModalRect(left, top, rect.width, rect.height);
+    });
+  })();
+
+  if (addStationEls.open) addStationEls.open.addEventListener("click", openAddStationModal);
+  if (addStationEls.close) addStationEls.close.addEventListener("click", closeAddStationModal);
+  if (addStationEls.cancel) addStationEls.cancel.addEventListener("click", closeAddStationModal);
+  if (addStationEls.backdrop) {
+    addStationEls.backdrop.addEventListener("click", function(event){
+      if (event.target === addStationEls.backdrop) closeAddStationModal();
+    });
+  }
+  if (addStationEls.save) addStationEls.save.addEventListener("click", submitAddStation);
+  document.addEventListener("keydown", function(event){
+    if (event.key === "Escape") closeAddStationModal();
+  });
+
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("add_station") === "1") {
+    openAddStationModal();
+  }
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,686 @@
+{% extends "base.html" %}
+{% block body_class %}studio-body{% endblock %}
+{% block container_class %}studio-container studio-dashboard-container{% endblock %}
+{% block extra_head %}
+<link href="{{ url_for('static', filename='broadcaster.css') }}" rel="stylesheet">
+{% endblock %}
+{% block content %}
+<div class="studio-shell studio-dashboard-shell">
+  <header class="studio-toolbar">
+    <div class="studio-toolbar__left">
+      <div class="station-switcher studio-station-switcher" data-dashboard-href="{{ url_for('dashboard') }}">
+        <button type="button" class="station-switcher-btn studio-station-switcher__btn" aria-haspopup="true" aria-expanded="false">
+          <span class="studio-station-switcher__brand">WEB BROADCASTER</span>{% if nav_station_label %} <span class="studio-station-switcher__station">({{ nav_station_label }})</span>{% endif %}
+          <span class="station-switcher-caret" aria-hidden="true">▾</span>
+        </button>
+        <div class="station-switcher-menu studio-station-switcher__menu" role="menu" aria-label="Stations">
+          <a class="station-switcher-item station-switcher-dashboard" role="menuitem" href="{{ url_for('dashboard') }}">Dashboard</a>
+          <div class="station-switcher-divider" role="separator"></div>
+          {% if stations and stations|length > 0 %}
+            {% for st in stations %}
+              <button type="button" class="station-switcher-item" role="menuitem" data-station-id="{{ st.db_filename or st.db or st.id }}">
+                {{ st.name }}
+              </button>
+            {% endfor %}
+          {% else %}
+            <div class="station-switcher-empty">No stations</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    <div class="studio-toolbar__center">
+      <div class="studio-toolbar__placeholder" aria-hidden="true"></div>
+    </div>
+    <div class="studio-toolbar__right"></div>
+  </header>
+
+  <section class="studio-dashboard-panel">
+    <div class="studio-dashboard-header">
+      <h1 id="dashboard-title">Dashboard</h1>
+    </div>
+    <p class="studio-dashboard-muted">Overview of all stations: status, uptime, and now playing.</p>
+    <div id="stations-dashboard" class="stations-dashboard-grid studio-dashboard-grid">
+      <div class="muted">Loading...</div>
+    </div>
+  </section>
+</div>
+
+
+<div id="studio-add-station-backdrop" class="modal-backdrop" aria-hidden="true">
+  <div class="modal modal--studio-station" role="dialog" aria-modal="true" aria-labelledby="studio-add-station-title">
+    <div class="panel-titlebar studio-floating-window__titlebar modal-titlebar modal-titlebar--studio-station" id="studio-add-station-titlebar">
+      <span id="studio-add-station-title">Add New Station</span>
+      <button type="button" id="studio-add-station-close" class="studio-window-close" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body modal-body--studio-station">
+      <form id="studio-add-station-form" class="studio-station-form">
+        <label class="studio-station-field">
+          <span>Radio name</span>
+          <input type="text" name="radio_name" value="{{ new_station_defaults.radio_name }}" autocomplete="off">
+        </label>
+        <div class="studio-station-section-title">Station Settings</div>
+        <label class="studio-station-field">
+          <span>Base music directory</span>
+          <input type="text" name="music_library_path" value="{{ new_station_defaults.music_library_path }}" autocomplete="off">
+        </label>
+        <div class="studio-station-section-title studio-soundsolution-title-row">
+          <span>SoundSolution Settings (DSP Sound Processor)</span>
+          <label class="studio-soundsolution-checkbox" aria-label="Enable DSP Sound Processor">
+            <input type="checkbox" name="soundsolution_enabled" {{ "checked" if (new_station_defaults.dsp_enabled if new_station_defaults and new_station_defaults.dsp_enabled is not none else 1) else "" }}>
+            <span>Enable DSP</span>
+          </label>
+        </div>
+        <label class="studio-station-field">
+          <span>SoundSolution .dat configuration (Change only if necessary)</span>
+          <input type="text" name="soundsolution_path" value="{{ new_station_defaults.soundsolution_path }}" autocomplete="off">
+        </label>
+      </form>
+      <div id="studio-add-station-error" class="studio-station-error" style="display:none;"></div>
+    </div>
+    <div class="modal-actions modal-actions--studio-station">
+      <button type="button" id="studio-add-station-save" class="modal-btn modal-primary">Add New Station</button>
+      <button type="button" id="studio-add-station-cancel" class="modal-btn modal-secondary">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<article id="stop-confirm-backdrop" class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered studio-floating-window--dialog studio-floating-window--no-resize studio-users-delete-window" aria-hidden="true" data-min-width="420" data-min-height="180" style="display:none;width:420px;height:180px;" role="dialog" aria-modal="true" aria-labelledby="stop-confirm-title">
+  <div class="panel-titlebar studio-floating-window__titlebar" id="stop-confirm-titlebar">
+    <span id="stop-confirm-title">Stop Broadcasting</span>
+    <button type="button" id="stop-confirm-close" class="studio-window-close" aria-label="Close stop confirmation">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window panel-body--studio-users-delete-window">
+    <div class="studio-users-delete-message">Are you sure you want to stop?</div>
+  </div>
+  <div class="panel-footer studio-floating-window__footer studio-users-delete-window__footer">
+    <button type="button" id="stop-confirm-yes" class="modal-btn modal-primary">Yes</button>
+    <button type="button" id="stop-confirm-no" class="modal-btn modal-secondary">No</button>
+  </div>
+</article>
+
+<article id="delete-confirm-backdrop" class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered studio-floating-window--dialog studio-floating-window--no-resize studio-users-delete-window" aria-hidden="true" data-min-width="420" data-min-height="180" style="display:none;width:420px;height:180px;" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title">
+  <div class="panel-titlebar studio-floating-window__titlebar" id="delete-confirm-titlebar">
+    <span id="delete-confirm-title">Delete Station</span>
+    <button type="button" id="delete-confirm-close" class="studio-window-close" aria-label="Close delete station">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window panel-body--studio-users-delete-window">
+    <div id="delete-confirm-body" class="studio-users-delete-message">Are you sure you want to delete this station?</div>
+  </div>
+  <div class="panel-footer studio-floating-window__footer studio-users-delete-window__footer">
+    <button type="button" id="delete-confirm-yes" class="modal-btn modal-primary">Delete</button>
+    <button type="button" id="delete-confirm-no" class="modal-btn modal-secondary">Cancel</button>
+  </div>
+</article>
+
+<div id="delete-password-backdrop" class="modal-backdrop" aria-hidden="true">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="delete-password-title">
+    <div class="modal-title" id="delete-password-title">Confirm Password</div>
+    <div class="modal-body">
+      <div class="muted" id="delete-password-body">Enter your password to confirm deletion.</div>
+      <input type="password" id="delete-password-input" class="text-input" autocomplete="current-password" placeholder="Password" />
+      <div class="muted" id="delete-password-error" style="display:none;margin-top:8px;color:#c00;"></div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" id="delete-password-yes" class="modal-btn modal-primary">Delete</button>
+      <button type="button" id="delete-password-no" class="modal-btn modal-secondary">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  const addStationEls = {
+    open: document.getElementById("studio-add-station-open"),
+    backdrop: document.getElementById("studio-add-station-backdrop"),
+    form: document.getElementById("studio-add-station-form"),
+    save: document.getElementById("studio-add-station-save"),
+    close: document.getElementById("studio-add-station-close"),
+    cancel: document.getElementById("studio-add-station-cancel"),
+    error: document.getElementById("studio-add-station-error")
+  };
+
+  function openAddStationModal(){
+    if (!addStationEls.backdrop) return;
+    addStationEls.backdrop.classList.add("active");
+    addStationEls.backdrop.setAttribute("aria-hidden", "false");
+    document.body.classList.add("modal-open");
+    if (addStationEls.error) {
+      addStationEls.error.textContent = "";
+      addStationEls.error.style.display = "none";
+    }
+    const firstInput = addStationEls.form ? addStationEls.form.querySelector('input[name="radio_name"]') : null;
+    if (firstInput) window.setTimeout(function(){ firstInput.focus(); }, 0);
+  }
+
+  function closeAddStationModal(){
+    if (!addStationEls.backdrop) return;
+    addStationEls.backdrop.classList.remove("active");
+    addStationEls.backdrop.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("modal-open");
+  }
+
+  function setAddStationError(message){
+    if (!addStationEls.error) return;
+    addStationEls.error.textContent = message || "";
+    addStationEls.error.style.display = message ? "block" : "none";
+  }
+
+  async function submitAddStation(){
+    if (!addStationEls.form || !addStationEls.save) return;
+    const formData = new FormData(addStationEls.form);
+    const payload = Object.fromEntries(formData.entries());
+    addStationEls.save.disabled = true;
+    setAddStationError("");
+    try {
+      const response = await fetch("/api/studio/stations/create", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+      const data = await response.json().catch(function(){ return null; });
+      if (!response.ok || !data || !data.ok) {
+        setAddStationError((data && data.error) || "Failed to create station.");
+        return;
+      }
+      closeAddStationModal();
+      if (data.redirect) {
+        window.location.href = data.redirect;
+        return;
+      }
+      window.location.reload();
+    } catch (error) {
+      setAddStationError("Failed to create station.");
+    } finally {
+      addStationEls.save.disabled = false;
+    }
+  }
+
+  async function selectStationAndGo(stationId){
+    try{
+      const resp = await fetch("/stations/select", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({station_id: stationId})
+      });
+      const data = await resp.json().catch(()=>null);
+      if (!resp.ok || !data || !data.ok){
+        console.error("select_station failed", resp.status, data);
+        return;
+      }
+      window.location.href = "/broadcaster";
+    }catch(err){
+      console.error("select_station error", err);
+    }
+  }
+  function el(tag, cls, text){
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+  function plural(count, singular, pluralForm){
+    return count === 1 ? singular : pluralForm;
+  }
+  function formatUptime(ms){
+    if (!Number.isFinite(ms) || ms < 0) ms = 0;
+    const totalMinutes = Math.floor(ms / 60000);
+    const days = Math.floor(totalMinutes / (60 * 24));
+    const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+    const minutes = totalMinutes % 60;
+    const parts = [];
+    if (days > 0) parts.push(days + " " + plural(days, "day", "days"));
+    if (hours > 0 || days > 0) parts.push(hours + " " + plural(hours, "hour", "hours"));
+    parts.push(minutes + " " + plural(minutes, "minute", "minutes"));
+    if (parts.length === 1) return parts[0];
+    if (parts.length === 2) return parts[0] + " and " + parts[1];
+    return parts[0] + ", " + parts[1] + " and " + parts[2];
+  }
+  function dashboardUptimeText(uptimeSec, running){
+    if (!running || uptimeSec === null || uptimeSec === undefined) return "";
+    const ms = Math.max(0, (parseInt(uptimeSec, 10) || 0) * 1000);
+    return "Uptime: " + formatUptime(ms);
+  }
+  function formatClock(seconds){
+    if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
+    const s = Math.floor(seconds);
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return String(m) + ":" + String(r).padStart(2, "0");
+  }
+  async function load(){
+    try{
+      const r = await fetch("/api/dashboard_overview", {cache:"no-store"});
+      const j = await r.json();
+      if (!j || !j.success) { try { render([], null); } catch(e){} return; }
+      render(j.stations || [], j.cpu_usage);
+    }catch(e){}
+  }
+  function updateDashboardTitle(stations, cpuUsage){
+    const title = document.getElementById("dashboard-title");
+    if (!title) return;
+    const list = Array.isArray(stations) ? stations : [];
+    const totalStations = list.length;
+    const runningStations = list.filter(function(st){ return Boolean(st && st.running); }).length;
+    title.textContent = "";
+    const stationsText = document.createElement("span");
+    stationsText.textContent = "Dashboard — " + runningStations + " of " + totalStations + " stations running";
+    title.appendChild(stationsText);
+    if (Number.isFinite(cpuUsage)) {
+      const cpuText = document.createElement("span");
+      cpuText.className = "dashboard-title-cpu";
+      cpuText.textContent = "CPU Usage: " + Math.round(cpuUsage) + "%";
+      title.appendChild(cpuText);
+    }
+  }
+  function render(stations, cpuUsage){
+    const root = document.getElementById("stations-dashboard");
+    updateDashboardTitle(stations, cpuUsage);
+    root.innerHTML = "";
+    if (!stations || stations.length === 0){
+      root.appendChild(el("div", "muted", "No stations."));
+      return;
+    }
+    stations.forEach(function(st){
+      const stationKey = (st.station_key || "").trim();
+      const card = el("div", "station-card studio-station-card");
+      const top = el("div", "station-card-top");
+      const left = el("div", "station-card-left");
+      const name = el("button", "station-card-name station-card-name-link", st.name || stationKey || "Station");
+      name.type = "button";
+      name.title = "Open station in Studio";
+      name.addEventListener("click", function(){
+        if (stationKey) selectStationAndGo(stationKey);
+      });
+      left.appendChild(name);
+      const running = Boolean(st.running);
+      const toggleBtn = el("button", "badge station-toggle-btn " + (running ? "badge-off" : "badge-on"), running ? "STOP" : "START");
+      toggleBtn.type = "button";
+      toggleBtn.dataset.stationKey = stationKey;
+      toggleBtn.dataset.state = running ? "running" : "stopped";
+      toggleBtn.addEventListener("click", async function(){
+        const isRunning = toggleBtn.dataset.state === "running";
+        const cmd = isRunning ? "stop" : "start";
+        if (!toggleBtn.dataset.stationKey) return;
+        if (cmd === "stop"){
+          const ok = await confirmStop();
+          if (!ok) return;
+        }
+        toggleBtn.disabled = true;
+        try{ await fetch("/stations/" + encodeURIComponent(toggleBtn.dataset.stationKey) + "/audio-engine/" + cmd, { method: "POST" }); }catch(e){}
+        await load();
+        toggleBtn.disabled = false;
+      });
+      const badge = el("span", "badge " + (running ? "badge-on" : "badge-off"), running ? "RUNNING" : "STOPPED");
+      top.appendChild(left);
+      const statusRow = el("div", "station-card-status");
+      statusRow.appendChild(el("span", "station-card-status-label", "Status:"));
+      statusRow.appendChild(badge);
+      const actionRow = el("div", "station-card-action");
+      actionRow.appendChild(el("span", "station-card-action-label", "Action:"));
+      const actionBtns = el("div", "station-card-action-buttons");
+      actionBtns.appendChild(toggleBtn);
+      if (!running){
+        const deleteActionBtn = el("button", "badge station-delete-action-btn badge-off", "DELETE");
+        deleteActionBtn.type = "button";
+        deleteActionBtn.title = "Delete station";
+        deleteActionBtn.setAttribute("aria-label", "Delete station");
+        actionBtns.appendChild(deleteActionBtn);
+        deleteActionBtn.addEventListener("click", async function(){
+          if (!stationKey) return;
+          const ok = await confirmDelete(st.name || stationKey || "Station");
+          if (!ok) return;
+          deleteActionBtn.disabled = true;
+          let deleted = false;
+          let preservePasswordError = false;
+          try{
+            while (true){
+              const pw = await promptDeletePassword(st.name || stationKey || "Station", preservePasswordError);
+              preservePasswordError = false;
+              if (pw === null) break;
+              const resp = await fetch("/stations/" + encodeURIComponent(stationKey) + "/delete", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({password: pw}) });
+              const data = await resp.json().catch(()=>null);
+              if (resp.ok && data && data.success){
+                deleted = true;
+                if (window.hideDeletePasswordModal) window.hideDeletePasswordModal();
+                break;
+              }
+              const errBox = document.getElementById("delete-password-error");
+              if (errBox){
+                let msg = "Delete failed.";
+                if (data && data.error === "invalid_password") msg = "Invalid password.";
+                else if (data && data.error === "station_running") msg = "Station is running.";
+                errBox.textContent = msg;
+                errBox.style.display = "block";
+              }
+              if (data && data.error === "invalid_password") {
+                const input = document.getElementById("delete-password-input");
+                if (input) input.value = "";
+                try{ if (input) input.focus(); }catch(e){}
+                preservePasswordError = true;
+                continue;
+              }
+            }
+          }catch(e){}
+          if (deleted) await load();
+          deleteActionBtn.disabled = false;
+        });
+      }
+      actionRow.appendChild(actionBtns);
+      const np = st.now_playing || {};
+      const line1 = el("div", "station-card-line");
+      const npTitle = (np.title || "").trim();
+      const npArtist = (np.artist || "").trim();
+      let nowText = "No track playing";
+      if (running) {
+        if (npTitle && npArtist) nowText = npArtist + " — " + npTitle;
+        else if (npTitle) nowText = npTitle;
+        else if (npArtist) nowText = npArtist;
+      }
+      const npLabel = el("div", "station-card-label", "Now playing");
+      line1.appendChild(npLabel);
+      const npVal = el("div", "station-card-value", nowText);
+      try{
+        const pr = st.progress || {};
+        const elapsed = Number(pr.elapsed);
+        const total = Number(pr.total);
+        if (running && Number.isFinite(elapsed) && Number.isFinite(total) && total > 0.5 && nowText !== "No track playing"){
+          const ptxt = formatClock(elapsed) + " / " + formatClock(total);
+          npLabel.appendChild(el("span", "station-card-progress-inline", ptxt));
+        }
+      }catch(e){}
+      line1.appendChild(npVal);
+      const line2 = el("div", "station-card-line");
+      line2.appendChild(el("div", "station-card-label", ""));
+      line2.appendChild(el("div", "station-card-value", dashboardUptimeText(st.uptime_sec, running)));
+      card.appendChild(top);
+      card.appendChild(statusRow);
+      card.appendChild(actionRow);
+      card.appendChild(line1);
+      card.appendChild(line2);
+      root.appendChild(card);
+    });
+  }
+  document.addEventListener("DOMContentLoaded", function(){
+    initStopConfirmModal();
+    initDeleteConfirmModal();
+    initDeletePasswordModal();
+    (function setupAddStationModalDrag(){
+    const backdrop = addStationEls.backdrop;
+    const modal = backdrop ? backdrop.querySelector('.modal--studio-station') : null;
+    const titlebar = document.getElementById('studio-add-station-titlebar') || (backdrop ? backdrop.querySelector('.modal-titlebar--studio-station') : null);
+    if (!backdrop || !modal || !titlebar) return;
+    let dragState = null;
+    let suppressBackdropClickUntil = 0;
+
+    function getModalRect(){
+      const rect = modal.getBoundingClientRect();
+      return {
+        width: modal.offsetWidth || rect.width || 760,
+        height: modal.offsetHeight || rect.height || 560
+      };
+    }
+
+    function clampModalPosition(left, top){
+      const rect = getModalRect();
+      const minLeft = 12;
+      const minTop = 8;
+      const maxLeft = Math.max(minLeft, window.innerWidth - rect.width - 12);
+      const maxTop = Math.max(minTop, window.innerHeight - rect.height - 12);
+      return {
+        left: Math.max(minLeft, Math.min(maxLeft, left)),
+        top: Math.max(minTop, Math.min(maxTop, top))
+      };
+    }
+
+    function placeModalAt(left, top){
+      const pos = clampModalPosition(left, top);
+      modal.style.left = pos.left + 'px';
+      modal.style.top = pos.top + 'px';
+      modal.style.right = 'auto';
+      modal.style.bottom = 'auto';
+      modal.style.margin = '0';
+      modal.style.transform = 'none';
+    }
+
+    function resetModalPosition(){
+      const rect = getModalRect();
+      placeModalAt(Math.round((window.innerWidth - rect.width) / 2), 8);
+    }
+
+    const originalOpen = openAddStationModal;
+    openAddStationModal = function(){
+      originalOpen();
+      window.setTimeout(resetModalPosition, 0);
+    };
+
+    function onPointerMove(event){
+      if (!dragState) return;
+      placeModalAt(
+        dragState.startLeft + (event.clientX - dragState.startClientX),
+        dragState.startTop + (event.clientY - dragState.startClientY)
+      );
+      dragState.moved = true;
+    }
+
+    function endDrag(){
+      if (!dragState) return;
+      const moved = !!dragState.moved;
+      dragState = null;
+      modal.classList.remove('is-dragging');
+      document.removeEventListener('pointermove', onPointerMove);
+      document.removeEventListener('pointerup', endDrag);
+      document.removeEventListener('pointercancel', endDrag);
+      if (moved) suppressBackdropClickUntil = Date.now() + 250;
+    }
+
+    titlebar.addEventListener('pointerdown', event => {
+      if (event.button !== 0) return;
+      if (event.target.closest('button, a, input, select, textarea')) return;
+      event.preventDefault();
+      const rect = modal.getBoundingClientRect();
+      dragState = {
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        startLeft: Number.parseFloat(modal.style.left) || rect.left,
+        startTop: Number.parseFloat(modal.style.top) || rect.top,
+        moved: false
+      };
+      modal.classList.add('is-dragging');
+      document.addEventListener('pointermove', onPointerMove);
+      document.addEventListener('pointerup', endDrag);
+      document.addEventListener('pointercancel', endDrag);
+    });
+
+    backdrop.addEventListener('click', event => {
+      if (event.target !== backdrop) return;
+      if (dragState || Date.now() < suppressBackdropClickUntil) return;
+      closeAddStationModal();
+    }, true);
+
+    window.addEventListener('resize', () => {
+      if (!backdrop.classList.contains('active')) return;
+      const left = Number.parseFloat(modal.style.left);
+      const top = Number.parseFloat(modal.style.top);
+      if (!Number.isFinite(left) || !Number.isFinite(top)) {
+        resetModalPosition();
+        return;
+      }
+      placeModalAt(left, top);
+    });
+  })();
+
+  if (addStationEls.open) addStationEls.open.addEventListener("click", openAddStationModal);
+    if (addStationEls.close) addStationEls.close.addEventListener("click", closeAddStationModal);
+  if (addStationEls.cancel) addStationEls.cancel.addEventListener("click", closeAddStationModal);
+    if (addStationEls.save) addStationEls.save.addEventListener("click", submitAddStation);
+    if (addStationEls.backdrop) {
+      addStationEls.backdrop.addEventListener("click", function(event){
+        if (event.target === addStationEls.backdrop) closeAddStationModal();
+      });
+    }
+    if (addStationEls.form) {
+      addStationEls.form.addEventListener("submit", function(event){
+        event.preventDefault();
+        submitAddStation();
+      });
+    }
+    document.addEventListener("keydown", function(event){
+      if (event.key === "Escape" && addStationEls.backdrop && addStationEls.backdrop.classList.contains("active")) {
+        closeAddStationModal();
+      }
+    });
+    load();
+    setInterval(load, 2000);
+  });
+})();
+</script>
+<script>
+function centerFloatingModal(backdrop) {
+  if (!backdrop) return;
+  const modal = backdrop.querySelector(".modal--floating") || backdrop.querySelector(".studio-floating-window") || backdrop;
+  if (!modal) return;
+  const width = modal.offsetWidth || parseInt(modal.style.width, 10) || 420;
+  const height = modal.offsetHeight || parseInt(modal.style.height, 10) || 180;
+  modal.style.left = Math.max(12, Math.round((window.innerWidth - width) / 2)) + "px";
+  modal.style.top = Math.max(12, Math.round((window.innerHeight - height) / 2)) + "px";
+}
+function enableFloatingModalDrag(backdrop, titlebar, closeBtn) {
+  if (!backdrop || !titlebar || titlebar.dataset.dragReady === "true") return;
+  const modal = backdrop.querySelector(".modal--floating") || backdrop.querySelector(".studio-floating-window") || backdrop;
+  if (!modal) return;
+  titlebar.dataset.dragReady = "true";
+  let dragState = null;
+  function stopDrag() { dragState = null; document.body.classList.remove("modal-dragging"); }
+  titlebar.addEventListener("pointerdown", function(event){
+    if (closeBtn && event.target === closeBtn) return;
+    if (event.button !== 0) return;
+    dragState = { startX: event.clientX, startY: event.clientY, left: modal.offsetLeft, top: modal.offsetTop };
+    document.body.classList.add("modal-dragging");
+    try { titlebar.setPointerCapture(event.pointerId); } catch (error) {}
+    event.preventDefault();
+  });
+  titlebar.addEventListener("pointermove", function(event){
+    if (!dragState) return;
+    const nextLeft = dragState.left + (event.clientX - dragState.startX);
+    const nextTop = dragState.top + (event.clientY - dragState.startY);
+    const maxLeft = Math.max(12, window.innerWidth - modal.offsetWidth - 12);
+    const maxTop = Math.max(12, window.innerHeight - modal.offsetHeight - 12);
+    modal.style.left = Math.min(Math.max(12, nextLeft), maxLeft) + "px";
+    modal.style.top = Math.min(Math.max(12, nextTop), maxTop) + "px";
+  });
+  titlebar.addEventListener("pointerup", stopDrag);
+  titlebar.addEventListener("pointercancel", stopDrag);
+}
+function initFloatingConfirmModal(backdropId, yesId, noId, closeId, titlebarId) {
+  const backdrop = document.getElementById(backdropId);
+  if (!backdrop || backdrop.dataset.initDone === "true") return;
+  backdrop.dataset.initDone = "true";
+  const yesBtn = document.getElementById(yesId);
+  const noBtn = document.getElementById(noId);
+  const closeBtn = document.getElementById(closeId);
+  const titlebar = document.getElementById(titlebarId);
+  function hide() {
+    backdrop.classList.remove("active");
+    backdrop.setAttribute("aria-hidden", "true");
+    backdrop.style.display = "none";
+  }
+  enableFloatingModalDrag(backdrop, titlebar, closeBtn);
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && backdrop.classList.contains("active")) hide();
+    if (e.key === "Enter" && backdrop.classList.contains("active")) { backdrop.dataset.result = "yes"; hide(); }
+  });
+  if (closeBtn) closeBtn.addEventListener("click", hide);
+  if (noBtn) noBtn.addEventListener("click", hide);
+  if (yesBtn) yesBtn.addEventListener("click", function(){ backdrop.dataset.result = "yes"; hide(); });
+}
+function initStopConfirmModal() {
+  initFloatingConfirmModal("stop-confirm-backdrop", "stop-confirm-yes", "stop-confirm-no", "stop-confirm-close", "stop-confirm-titlebar");
+}
+function confirmStop() {
+  const backdrop = document.getElementById("stop-confirm-backdrop");
+  if (!backdrop) return Promise.resolve(false);
+  backdrop.dataset.result = "";
+  backdrop.style.display = "flex";
+  backdrop.classList.add("active");
+  backdrop.setAttribute("aria-hidden", "false");
+  centerFloatingModal(backdrop);
+  const yesBtn = document.getElementById("stop-confirm-yes");
+  if (yesBtn) window.setTimeout(function(){ yesBtn.focus(); }, 0);
+  return new Promise(function(resolve){
+    const start = Date.now();
+    const t = setInterval(function(){
+      if (backdrop.dataset.result === "yes") { clearInterval(t); backdrop.dataset.result = ""; resolve(true); return; }
+      if (!backdrop.classList.contains("active")) { clearInterval(t); resolve(false); return; }
+      if (Date.now() - start > 60000) { clearInterval(t); backdrop.classList.remove("active"); resolve(false); }
+    }, 100);
+  });
+}
+function initDeleteConfirmModal() {
+  initFloatingConfirmModal("delete-confirm-backdrop", "delete-confirm-yes", "delete-confirm-no", "delete-confirm-close", "delete-confirm-titlebar");
+}
+function confirmDelete(stationName) {
+  const backdrop = document.getElementById("delete-confirm-backdrop");
+  if (!backdrop) return Promise.resolve(false);
+  const body = document.getElementById("delete-confirm-body");
+  const nm = (stationName || "this station").trim();
+  if (body) body.textContent = 'Are you sure you want to delete "' + nm + '"?';
+  backdrop.dataset.result = "";
+  backdrop.style.display = "flex";
+  backdrop.classList.add("active");
+  backdrop.setAttribute("aria-hidden", "false");
+  centerFloatingModal(backdrop);
+  const yesBtn = document.getElementById("delete-confirm-yes");
+  if (yesBtn) window.setTimeout(function(){ yesBtn.focus(); }, 0);
+  return new Promise(function(resolve){
+    const start = Date.now();
+    const t = setInterval(function(){
+      if (backdrop.dataset.result === "yes") { clearInterval(t); backdrop.dataset.result = ""; resolve(true); return; }
+      if (!backdrop.classList.contains("active")) { clearInterval(t); resolve(false); return; }
+      if (Date.now() - start > 60000) { clearInterval(t); backdrop.classList.remove("active"); resolve(false); }
+    }, 100);
+  });
+}
+function initDeletePasswordModal() {
+  const backdrop = document.getElementById("delete-password-backdrop");
+  if (!backdrop) return;
+  const yesBtn = document.getElementById("delete-password-yes");
+  const noBtn = document.getElementById("delete-password-no");
+  const input = document.getElementById("delete-password-input");
+  function hide() { backdrop.classList.remove("active"); backdrop.setAttribute("aria-hidden", "true"); }
+  window.hideDeletePasswordModal = hide;
+  backdrop.addEventListener("click", function(e){ if (e.target === backdrop) hide(); });
+  document.addEventListener("keydown", function(e){
+    if (e.key === "Escape" && backdrop.classList.contains("active")) hide();
+    if (e.key === "Enter" && backdrop.classList.contains("active")) backdrop.dataset.result = "yes";
+  });
+  if (noBtn) noBtn.addEventListener("click", hide);
+  if (yesBtn) yesBtn.addEventListener("click", function(){ backdrop.dataset.result = "yes"; });
+  if (input) input.addEventListener("input", function(){ const err = document.getElementById("delete-password-error"); if (err) err.style.display = "none"; });
+}
+function promptDeletePassword(stationName, preserveError) {
+  const backdrop = document.getElementById("delete-password-backdrop");
+  const body = document.getElementById("delete-password-body");
+  const input = document.getElementById("delete-password-input");
+  if (!backdrop) return Promise.resolve(null);
+  const nm = (stationName || "this station").trim();
+  if (body) body.textContent = 'Enter your password to delete "' + nm + '".';
+  backdrop.dataset.result = "";
+  backdrop.classList.add("active");
+  backdrop.setAttribute("aria-hidden", "false");
+  if (input) { input.value = ""; setTimeout(function(){ try{ input.focus(); }catch(e){} }, 10); }
+  if (!preserveError) {
+    const err = document.getElementById("delete-password-error");
+    if (err) { err.textContent = ""; err.style.display = "none"; }
+  }
+  return new Promise(function(resolve){
+    const start = Date.now();
+    const t = setInterval(function(){
+      if (backdrop.dataset.result === "yes") { clearInterval(t); backdrop.dataset.result = ""; resolve(input ? input.value : ""); return; }
+      if (!backdrop.classList.contains("active")) { clearInterval(t); resolve(null); return; }
+      if (Date.now() - start > 60000) { clearInterval(t); backdrop.classList.remove("active"); resolve(null); }
+    }, 100);
+  });
+}
+</script>
+{% endblock %}

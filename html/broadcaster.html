@@ -1,0 +1,1441 @@
+{% extends "base.html" %}
+{% block body_class %}studio-body{% endblock %}
+{% block container_class %}studio-container{% endblock %}
+{% block extra_head %}
+<link href="{{ url_for('static', filename='broadcaster.css') }}" rel="stylesheet">
+{% endblock %}
+{% block content %}
+<div class="studio-shell" data-layout="layout-1">
+  <header class="studio-toolbar">
+    <div class="studio-toolbar__left">
+      <div class="station-switcher studio-station-switcher" data-dashboard-href="{{ url_for('dashboard') }}">
+        <button type="button" class="station-switcher-btn studio-station-switcher__btn" aria-haspopup="true" aria-expanded="false">
+          <span class="studio-station-switcher__brand">WEB BROADCASTER</span> <span class="studio-station-switcher__station">{% if nav_station_label %}({{ nav_station_label }}){% endif %}</span>
+          <span class="station-switcher-caret" aria-hidden="true">▾</span>
+        </button>
+        <div class="station-switcher-menu studio-station-switcher__menu" role="menu" aria-label="Stations">
+          <a class="station-switcher-item station-switcher-dashboard" role="menuitem" href="{{ url_for('dashboard') }}">Dashboard</a>
+          <div class="station-switcher-divider" role="separator"></div>
+          {% if stations and stations|length > 0 %}
+            {% for st in stations %}
+              <button type="button" class="station-switcher-item" role="menuitem" data-station-id="{{ st.db_filename or st.db or st.id }}">
+                {{ st.name }}
+              </button>
+            {% endfor %}
+          {% else %}
+            <div class="station-switcher-empty">No stations</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    <div class="studio-toolbar__center">
+      <div class="studio-toolbar__placeholder" aria-hidden="true"></div>
+    </div>
+    <div class="studio-toolbar__right">
+      <div class="layout-switch" role="tablist" aria-label="Studio layouts">
+        <button class="layout-btn active" data-layout-target="layout-1" role="tab" aria-selected="true">Desktop A</button>
+        <button class="layout-btn" data-layout-target="layout-2" role="tab" aria-selected="false">Desktop B</button>
+      </div>
+      <div id="layout-context-menu" class="context-menu" aria-hidden="true" hidden>
+        <div class="context-menu__panel">
+          <button type="button" class="context-menu__item" data-layout-menu-action="default">Restore to default</button>
+        </div>
+      </div>
+      <a class="studio-btn studio-btn--ghost" href="{{ url_for('dashboard') }}">Dashboard</a>
+      <button class="studio-btn studio-btn--ghost" id="studio-settings-open" type="button">Settings</button>
+      <a class="studio-btn studio-btn--ghost studio-btn--logout" href="{{ url_for('logout') }}">Logout ({{ session.get('username') }})</a>
+    </div>
+  </header>
+
+  <div class="studio-workspace" id="studio-workspace">
+    <div class="studio-stage" id="studio-stage">
+      <section class="studio-grid">
+    <article class="studio-panel panel-deck" data-panel="deck">
+      <div class="panel-titlebar"><span>Deck</span></div>
+      <div class="panel-body panel-body--deck">
+        <button class="deck-onair-button is-off" id="deck-onair-button" type="button" aria-pressed="false">
+          <span class="deck-onair-button__state">OFF AIR</span>
+          <span class="deck-onair-button__hint">Push to ON</span>
+        </button>
+        <div class="deck-main">
+          <div class="deck-artist" id="deck-artist">Artist: No active track</div>
+          <div class="deck-title" id="deck-title">Title: No active track</div>
+          <div class="deck-year" id="deck-year">Year:</div>
+          <div class="deck-progress-wrap">
+            <div class="deck-progress" id="deck-progress"><div class="deck-progress__fill" id="deck-progress-fill"></div></div>
+            <div class="deck-progress-tooltip" id="deck-progress-tooltip" aria-hidden="true">0:00</div>
+          </div>
+          <div class="deck-controls-row">
+            <button class="studio-btn" data-control="play">Play</button>
+            <button class="studio-btn" data-control="pause">Pause</button>
+            <button class="studio-btn" data-control="stop">Stop</button>
+            <button class="studio-btn" data-control="next">Next</button>
+            <div class="deck-track-time" id="deck-time">0:00 / 0:00</div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <article class="studio-panel panel-clock" data-panel="clock">
+      <div class="panel-titlebar panel-titlebar--clock"><span>Clock</span><span class="clock-date clock-date--titlebar" id="clock-date">----</span></div>
+      <div class="panel-body panel-body--clock">
+        <div class="clock-analog" id="clock-analog" aria-label="Analog clock">
+          <svg class="clock-analog__svg" viewBox="0 0 100 100" role="img" aria-hidden="true">
+            <circle class="clock-analog__rim" cx="50" cy="50" r="47"></circle>
+            <circle class="clock-analog__face" cx="50" cy="50" r="44"></circle>
+            <g class="clock-analog__ticks" id="clock-major-ticks"></g>
+            <g class="clock-analog__minor-ticks" id="clock-minor-ticks"></g>
+            <line class="clock-analog__hand clock-analog__hand--hour" id="clock-hour-hand" x1="50" y1="50" x2="50" y2="29"></line>
+            <line class="clock-analog__hand clock-analog__hand--minute" id="clock-minute-hand" x1="50" y1="50" x2="50" y2="20"></line>
+            <line class="clock-analog__hand clock-analog__hand--second" id="clock-second-hand" x1="50" y1="54" x2="50" y2="16"></line>
+            <circle class="clock-analog__center" cx="50" cy="50" r="2.6"></circle>
+          </svg>
+        </div>
+      </div>
+    </article>
+
+    <article class="studio-panel panel-queue" data-panel="queue">
+      <div class="panel-titlebar"><span>Queue</span></div>
+      <div class="panel-body panel-body--queue">
+        <div class="queue-toolbar" aria-label="Queue actions">
+          <button class="queue-toolbar__btn" type="button" data-queue-action="add" title="Add">+</button>
+          <button class="queue-toolbar__btn" type="button" data-queue-action="remove" title="Remove">−</button>
+          <button class="queue-toolbar__btn" type="button" data-queue-action="search" title="Search">⌕</button>
+          <button class="queue-toolbar__btn" type="button" data-queue-action="refresh" title="Refresh">↻</button>
+        </div>
+        <div class="queue-table">
+          <div class="queue-table__header">
+            <div class="queue-table__eta">ETA</div>
+            <div class="queue-table__title">Artist - Title</div>
+            <div class="queue-table__duration">Duration</div>
+          </div>
+          <div class="queue-table__rows" id="queue-list"></div>
+        </div>
+      </div>
+      <div class="panel-footer panel-footer--queue">
+        <div class="panel-footer__summary" id="queue-summary">0 tracks (0d, 00:00:00)</div>
+      </div>
+    </article>
+
+    <article class="studio-panel panel-playlist" data-panel="playlist">
+      <div class="panel-titlebar"><span>Playlist</span></div>
+      <div class="panel-body panel-body--playlist-combined">
+        <div class="playlist-combined" id="playlist-combined">
+          <section class="playlist-section playlist-section--tree" id="playlist-tree-section">
+            <div class="playlist-section__header"><span>Categories</span></div>
+            <div class="playlist-tree" aria-label="Playlist categories">
+              <div class="playlist-tree__root">
+                <button class="playlist-tree__node playlist-tree__node--root is-expanded" type="button" id="playlist-root-toggle" aria-expanded="true">
+                  <span class="playlist-tree__caret"></span>
+                  <span class="playlist-tree__folder"></span>
+                  <span class="playlist-tree__label">Playlist</span>
+                </button>
+              </div>
+              <div class="playlist-tree__children" id="playlist-categories"></div>
+            </div>
+          </section>
+          <div class="playlist-splitter" id="playlist-splitter" aria-hidden="true"></div>
+          <section class="playlist-section playlist-section--tracks" id="playlist-tracks-section">
+            <div class="playlist-section__header playlist-section__header--with-meta"><span>Tracks in Selected Category</span><span class="panel-muted" id="tracks-category-name">No category selected</span></div>
+            <div class="queue-toolbar" aria-label="Category track actions">
+              <button class="queue-toolbar__btn" type="button" data-track-action="add" title="Add">+</button>
+              <button class="queue-toolbar__btn" type="button" data-track-action="remove" title="Remove">−</button>
+              <button class="queue-toolbar__btn" type="button" data-track-action="search" title="Search">⌕</button>
+              <button class="queue-toolbar__btn" type="button" data-track-action="refresh" title="Refresh">↻</button>
+            </div>
+            <div class="queue-table playlist-tracks-table">
+              <div class="queue-table__header">
+                <div class="queue-table__eta">#</div>
+                <div class="queue-table__title">Artist - Title</div>
+                <div class="queue-table__duration">Duration</div>
+              </div>
+              <div class="queue-table__rows" id="tracks-list"></div>
+            </div>
+            <div class="panel-footer panel-footer--queue">
+              <div class="panel-footer__summary" id="tracks-summary">0 tracks</div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </article>
+
+    <article class="studio-panel panel-history" data-panel="history">
+      <div class="panel-titlebar"><span>History</span></div>
+      <div class="panel-body panel-body--history">
+        <div class="queue-table history-table">
+          <div class="queue-table__header">
+            <div class="queue-table__eta">Time</div>
+            <div class="queue-table__title">Artist - Title</div>
+            <div class="queue-table__duration">Duration</div>
+          </div>
+          <div class="queue-table__rows" id="history-list"></div>
+        </div>
+        <div class="panel-footer panel-footer--queue">
+          <div class="panel-footer__summary" id="history-summary">0 tracks</div>
+        </div>
+      </div>
+    </article>
+
+    <article class="studio-panel panel-encoders" data-panel="encoders">
+      <div class="panel-titlebar"><span>Encoders</span></div>
+      <div class="panel-body panel-body--encoders">
+        <div class="queue-toolbar encoder-toolbar" aria-label="Encoder controls">
+          <button type="button" class="queue-toolbar__btn" id="encoders-add-btn" title="Add encoder" aria-label="Add encoder">+</button>
+          <button type="button" class="queue-toolbar__btn" id="encoders-remove-btn" title="Remove encoder" aria-label="Remove encoder">−</button>
+          <button type="button" class="queue-toolbar__btn encoder-toolbar__btn encoder-toolbar__btn--config" id="encoders-config-btn" title="Encoder configuration" aria-label="Encoder configuration">
+            <span class="encoder-config-icon" aria-hidden="true"></span>
+          </button>
+          <button type="button" class="queue-toolbar__btn" id="encoders-start-btn" title="Start encoder" aria-label="Start encoder">▶</button>
+          <button type="button" class="queue-toolbar__btn" id="encoders-stop-btn" title="Stop encoder" aria-label="Stop encoder">■</button>
+        </div>
+        <div class="queue-table encoder-table">
+          <div class="queue-table__header encoder-table__header">
+            <div class="encoder-table__index">#</div>
+            <div class="encoder-table__format">Format</div>
+            <div class="encoder-table__status">Status</div>
+            <div class="encoder-table__description">Description</div>
+          </div>
+          <div class="queue-table__rows" id="encoders-list"></div>
+        </div>
+      </div>
+    </article>
+
+    <article class="studio-panel panel-pal" data-panel="pal">
+      <div class="panel-titlebar"><span>SCRIPTS / SCHEDULER</span></div>
+      <div class="panel-body panel-body--encoders">
+        <div class="queue-toolbar encoder-toolbar script-toolbar" aria-label="Scripts / Scheduler controls">
+          <button type="button" class="queue-toolbar__btn" id="scripts-add-btn" title="Add" aria-label="Add">+</button>
+          <button type="button" class="queue-toolbar__btn" id="scripts-remove-btn" title="Remove" aria-label="Remove">−</button>
+          <button type="button" class="queue-toolbar__btn encoder-toolbar__btn encoder-toolbar__btn--config" id="scripts-config-btn" title="Configuration" aria-label="Configuration">
+            <span class="encoder-config-icon" aria-hidden="true"></span>
+          </button>
+          <button type="button" class="queue-toolbar__btn" id="scripts-start-btn" title="Start" aria-label="Start">▶</button>
+          <button type="button" class="queue-toolbar__btn" id="scripts-stop-btn" title="Stop" aria-label="Stop">■</button>
+        </div>
+        <div class="queue-table encoder-table script-table">
+          <div class="queue-table__header encoder-table__header script-table__header">
+            <div class="encoder-table__index script-table__index">#</div>
+            <div class="encoder-table__format script-table__autostart">AutoStart</div>
+            <div class="encoder-table__format script-table__type">Type</div>
+            <div class="encoder-table__description script-table__description">Script file</div>
+            <div class="encoder-table__status script-table__status">Status</div>
+          </div>
+          <div class="queue-table__rows" id="pal-list"></div>
+        </div>
+      </div>
+    </article>
+      </section>
+    </div>
+  </div>
+</div>
+
+
+<div id="playlist-context-menu" class="context-menu" aria-hidden="true" style="display:none;">
+  <div class="context-menu__panel">
+    <button type="button" class="context-menu__item" data-playlist-menu-action="new">New</button>
+    <button type="button" class="context-menu__item" data-playlist-menu-action="delete">Delete</button>
+    <button type="button" class="context-menu__item" data-playlist-menu-action="rename">Rename</button>
+    <div class="context-menu__item context-menu__item--submenu" data-submenu-open="false">
+      <span>Add</span>
+      <span class="context-menu__arrow">▶</span>
+      <div class="context-menu__submenu">
+        <button type="button" class="context-menu__item" data-playlist-menu-action="add-files">Add Files</button>
+        <button type="button" class="context-menu__item" data-playlist-menu-action="add-directory">Add Directory</button>
+        <button type="button" class="context-menu__item" data-playlist-menu-action="add-url">Add URL</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<div id="tracks-add-menu" class="context-menu" aria-hidden="true" style="display:none;">
+  <div class="context-menu__panel">
+    <button type="button" class="context-menu__item" data-track-add-action="add-files">Add Files</button>
+    <button type="button" class="context-menu__item" data-track-add-action="add-directory">Add Directory</button>
+    <button type="button" class="context-menu__item" data-track-add-action="add-url">Add URL</button>
+  </div>
+</div>
+
+<div id="scripts-add-menu" class="context-menu" aria-hidden="true" style="display:none;">
+  <div class="context-menu__panel">
+    <button type="button" class="context-menu__item" data-scripts-add-action="script">Add script</button>
+    <button type="button" class="context-menu__item" data-scripts-add-action="scheduler">Add scheduler</button>
+  </div>
+</div>
+
+<article id="playlist-prompt-backdrop" class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered studio-floating-window--no-resize studio-users-password-window" aria-hidden="true" data-min-width="460" data-min-height="230" style="display:none;width:460px;height:230px;">
+  <div class="panel-titlebar studio-floating-window__titlebar" id="playlist-prompt-titlebar">
+    <span id="playlist-prompt-title">New Category</span>
+    <button type="button" id="playlist-prompt-close" class="studio-window-close" aria-label="Close">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window panel-body--studio-users-password-window">
+    <label id="playlist-prompt-label" for="playlist-prompt-input">New category name</label>
+    <input id="playlist-prompt-input" type="text" class="text-input" autocomplete="off" />
+  </div>
+  <div class="panel-footer studio-floating-window__footer studio-users-password-window__footer">
+    <button type="button" id="playlist-prompt-ok" class="modal-btn modal-primary">Add</button>
+    <button type="button" id="playlist-prompt-cancel" class="modal-btn modal-secondary">Cancel</button>
+  </div>
+</article>
+
+
+
+
+<div id="encoder-config-backdrop" class="modal-backdrop modal-backdrop--topmost" aria-hidden="true" style="display:none;">
+  <div class="modal modal--encoder-config" role="dialog" aria-modal="true" aria-labelledby="encoder-config-title">
+    <div class="panel-titlebar studio-floating-window__titlebar modal-titlebar" id="encoder-config-titlebar">
+      <span id="encoder-config-title">Encoder Configuration</span>
+      <button type="button" id="encoder-config-close" class="studio-window-close" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body modal-body--encoder-config">
+      <div class="encoder-config-form">
+        <label class="encoder-config-field">
+          <span>Server IP</span>
+          <input type="text" id="encoder-config-host" autocomplete="off">
+        </label>
+        <label class="encoder-config-field">
+          <span>Server Port</span>
+          <input type="text" id="encoder-config-port" inputmode="numeric" autocomplete="off">
+        </label>
+        <label class="encoder-config-field">
+          <span>Password</span>
+          <input type="password" id="encoder-config-password" autocomplete="new-password">
+        </label>
+        <label class="encoder-config-field">
+          <span>Mount</span>
+          <input type="text" id="encoder-config-mount" autocomplete="off">
+        </label>
+        <div class="encoder-config-row">
+          <label class="encoder-config-field encoder-config-field--compact">
+            <span>Format</span>
+            <select id="encoder-config-codec">
+              <option value="mp3">MP3</option>
+              <option value="aacplusv2">AAC+</option>
+            </select>
+          </label>
+          <label class="encoder-config-field encoder-config-field--compact">
+            <span>Bitrate</span>
+            <select id="encoder-config-bitrate">
+              <option value="32">32</option>
+              <option value="48">48</option>
+              <option value="64">64</option>
+              <option value="96">96</option>
+              <option value="128">128</option>
+              <option value="160">160</option>
+              <option value="192">192</option>
+              <option value="256">256</option>
+              <option value="320">320</option>
+            </select>
+          </label>
+        </div>
+        <label class="encoder-config-field">
+          <span>Station name</span>
+          <input type="text" id="encoder-config-name" autocomplete="off">
+        </label>
+        <label class="encoder-config-field">
+          <span>Station description</span>
+          <input type="text" id="encoder-config-description" autocomplete="off">
+        </label>
+        <label class="encoder-config-field">
+          <span>Genre</span>
+          <input type="text" id="encoder-config-genre" autocomplete="off">
+        </label>
+        <label class="encoder-config-field">
+          <span>Website URL</span>
+          <input type="text" id="encoder-config-website" autocomplete="off">
+        </label>
+        <label class="encoder-config-checkbox" for="encoder-config-autostart">
+          <input type="checkbox" id="encoder-config-autostart">
+          <span>Auto start encoder</span>
+        </label>
+        <label class="encoder-config-checkbox" for="encoder-config-add-year-to-icecast-meta">
+          <input type="checkbox" id="encoder-config-add-year-to-icecast-meta">
+          <span>Add year to Icecast meta</span>
+        </label>
+      </div>
+    </div>
+    <div class="modal-actions modal-actions--encoder-config">
+      <button type="button" id="encoder-config-ok" class="modal-btn modal-primary">OK</button>
+      <button type="button" id="encoder-config-cancel" class="modal-btn modal-secondary">Cancel</button>
+    </div>
+    <div class="panel-resize-handle" aria-hidden="true"></div>
+  </div>
+</div>
+
+<article id="studio-stop-confirm-backdrop" class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered studio-floating-window--dialog studio-floating-window--no-resize studio-users-delete-window" aria-hidden="true" data-min-width="420" data-min-height="180" style="display:none;width:420px;height:180px;">
+  <div class="panel-titlebar studio-floating-window__titlebar">
+    <span id="studio-stop-confirm-title">Stop Broadcasting</span>
+    <button type="button" id="studio-stop-confirm-close" class="studio-window-close" aria-label="Close stop broadcasting confirmation">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window panel-body--studio-users-delete-window">
+    <div class="studio-users-delete-message">Are you sure you want to stop?</div>
+  </div>
+  <div class="panel-footer studio-floating-window__footer studio-users-delete-window__footer">
+    <button type="button" id="studio-stop-confirm-yes" class="modal-btn modal-primary">Yes</button>
+    <button type="button" id="studio-stop-confirm-no" class="modal-btn modal-secondary">No</button>
+  </div>
+</article>
+
+<article id="playlist-delete-window" class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered studio-floating-window--dialog studio-floating-window--no-resize studio-users-delete-window" aria-hidden="true" data-min-width="420" data-min-height="180" style="display:none;width:420px;height:180px;">
+  <div class="panel-titlebar studio-floating-window__titlebar">
+    <span id="playlist-delete-title">Delete Category</span>
+    <button type="button" id="playlist-delete-close" class="studio-window-close" aria-label="Close delete category">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window panel-body--studio-users-delete-window">
+    <div id="playlist-delete-body" class="studio-users-delete-message">Delete this category and remove all its track links?</div>
+  </div>
+  <div class="panel-footer studio-floating-window__footer studio-users-delete-window__footer">
+    <button type="button" id="playlist-delete-yes" class="modal-btn modal-primary">Delete</button>
+    <button type="button" id="playlist-delete-no" class="modal-btn modal-secondary">Cancel</button>
+  </div>
+</article>
+
+<article id="queue-delete-window" class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered studio-floating-window--dialog studio-floating-window--no-resize studio-users-delete-window" aria-hidden="true" data-min-width="420" data-min-height="180" style="display:none;width:420px;height:180px;">
+  <div class="panel-titlebar studio-floating-window__titlebar">
+    <span id="queue-delete-title">Remove Queue Items</span>
+    <button type="button" id="queue-delete-close" class="studio-window-close" aria-label="Close queue delete confirmation">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window panel-body--studio-users-delete-window">
+    <div id="queue-delete-body" class="studio-users-delete-message">Are you sure you want to remove the selected queue items?</div>
+  </div>
+  <div class="panel-footer studio-floating-window__footer studio-users-delete-window__footer">
+    <button type="button" id="queue-delete-yes" class="modal-btn modal-primary">Yes</button>
+    <button type="button" id="queue-delete-no" class="modal-btn modal-secondary">No</button>
+  </div>
+</article>
+
+<article id="encoders-delete-window" class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered studio-floating-window--dialog studio-floating-window--no-resize studio-users-delete-window" aria-hidden="true" data-min-width="420" data-min-height="180" style="display:none;width:420px;height:180px;">
+  <div class="panel-titlebar studio-floating-window__titlebar">
+    <span id="encoders-delete-title">Delete Encoder</span>
+    <button type="button" id="encoders-delete-close" class="studio-window-close" aria-label="Close delete encoder">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window panel-body--studio-users-delete-window">
+    <div id="encoders-delete-body" class="studio-users-delete-message">Are you sure you want to delete the selected encoder?</div>
+  </div>
+  <div class="panel-footer studio-floating-window__footer studio-users-delete-window__footer">
+    <button type="button" id="encoders-delete-yes" class="modal-btn modal-primary">Delete</button>
+    <button type="button" id="encoders-delete-no" class="modal-btn modal-secondary">Cancel</button>
+  </div>
+</article>
+
+<article id="scripts-delete-backdrop" class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered studio-floating-window--dialog studio-floating-window--no-resize studio-users-delete-window" aria-hidden="true" data-min-width="420" data-min-height="180" style="display:none;width:420px;height:180px;">
+  <div class="panel-titlebar studio-floating-window__titlebar">
+    <span id="scripts-delete-title">Delete Script</span>
+    <button type="button" id="scripts-delete-close" class="studio-window-close" aria-label="Close delete script">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window panel-body--studio-users-delete-window">
+    <div id="scripts-delete-body" class="studio-users-delete-message">Are you sure you want to delete the selected script?</div>
+  </div>
+  <div class="panel-footer studio-floating-window__footer studio-users-delete-window__footer">
+    <button type="button" id="scripts-delete-yes" class="modal-btn modal-primary">Delete</button>
+    <button type="button" id="scripts-delete-no" class="modal-btn modal-secondary">Cancel</button>
+  </div>
+</article>
+
+
+<article id="category-tracks-delete-window" class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered studio-floating-window--dialog studio-floating-window--no-resize studio-users-delete-window" aria-hidden="true" data-min-width="420" data-min-height="180" style="display:none;width:420px;height:180px;">
+  <div class="panel-titlebar studio-floating-window__titlebar">
+    <span id="category-tracks-delete-title">Delete Category Tracks</span>
+    <button type="button" id="category-tracks-delete-close" class="studio-window-close" aria-label="Close delete category tracks">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window panel-body--studio-users-delete-window">
+    <div id="category-tracks-delete-body" class="studio-users-delete-message">Are you sure you want to delete the selected tracks from this category?</div>
+  </div>
+  <div class="panel-footer studio-floating-window__footer studio-users-delete-window__footer">
+    <button type="button" id="category-tracks-delete-yes" class="modal-btn modal-primary">Delete</button>
+    <button type="button" id="category-tracks-delete-no" class="modal-btn modal-secondary">Cancel</button>
+  </div>
+</article>
+
+<div id="scripts-start-blocked-backdrop" class="modal-backdrop" aria-hidden="true" style="display:none;">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="scripts-start-blocked-title">
+    <div class="modal-title" id="scripts-start-blocked-title">Script Start Blocked</div>
+    <div class="modal-body">Scripts can only be started while the player is ON AIR.</div>
+    <div class="modal-actions">
+      <button type="button" id="scripts-start-blocked-ok" class="modal-btn modal-primary">OK</button>
+    </div>
+  </div>
+</div>
+
+
+
+
+
+
+
+<article id="studio-settings-window" class="studio-panel studio-floating-window studio-floating-window--centered studio-settings-window" aria-hidden="true" style="display:none;">
+  <div class="panel-titlebar studio-floating-window__titlebar">
+    <span>Settings</span>
+    <button type="button" id="studio-settings-close" class="studio-window-close" aria-label="Close settings">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window panel-body--studio-settings">
+    <div class="studio-settings-layout">
+      <aside class="studio-settings-nav" aria-label="Settings sections">
+        <button type="button" class="studio-settings-nav__item is-active" data-settings-section="general">General</button>
+        <button type="button" class="studio-settings-nav__item" data-settings-section="autodj">AutoDJ</button>
+        <button type="button" class="studio-settings-nav__item" data-settings-section="crossfade">Crossfade</button>
+        <button type="button" class="studio-settings-nav__item" data-settings-section="stations">Stations</button>
+        <button type="button" class="studio-settings-nav__item" data-settings-section="users">Users</button>
+        <button type="button" class="studio-settings-nav__item" data-settings-section="console">Console</button>
+        <button type="button" class="studio-settings-nav__item" data-settings-section="about">About</button>
+      </aside>
+      <div class="studio-settings-content">
+        <section class="studio-settings-section is-active" data-settings-panel="general">
+          <form id="studio-settings-form" class="studio-settings-form">
+            <div class="studio-settings-status">Audio engine status: <span id="studio-settings-audio-engine-status">unknown</span></div>
+            <label>Radio name
+              <input type="text" name="radio_name" value="{{ settings.radio_name if settings and settings.radio_name else '' }}">
+            </label>
+            <h3>Station Settings</h3>
+            <label>Base music directory
+              <input type="text" name="music_library_path" value="{{ settings.music_library_path if settings and settings.music_library_path else '' }}">
+            </label>
+            <h3 class="studio-soundsolution-title-row">
+              <span>SoundSolution Settings (DSP Sound Processor)</span>
+              <label class="studio-soundsolution-checkbox" aria-label="Enable DSP Sound Processor">
+                <input id="studio-settings-dsp-enabled" type="checkbox" name="soundsolution_enabled" {{ "checked" if (settings.dsp_enabled if settings and settings.dsp_enabled is not none else 1) else "" }}>
+                <span>Enable DSP</span>
+              </label>
+            </h3>
+            <label>SoundSolution .dat configuration (Change only if necessary)
+              <input type="text" name="soundsolution_path" value="{{ settings.ssproc_appimage if settings and settings.ssproc_appimage else '' }}">
+            </label>
+          </form>
+        </section>
+        <section class="studio-settings-section" data-settings-panel="crossfade">
+          <form id="studio-crossfade-form" class="studio-settings-form">
+            <label>Remove silence from beginning of track (dB). (default: -20.0)
+              <input type="text" name="gap_killer_start_dbfs" value="{{ settings.gap_killer_start_dbfs if settings and settings.gap_killer_start_dbfs is not none else -20.0 }}">
+            </label>
+            <label>Remove silence from end of track (dB). (default: -24.0)
+              <input type="text" name="gap_killer_end_dbfs" value="{{ settings.gap_killer_end_dbfs if settings and settings.gap_killer_end_dbfs is not none else -24.0 }}">
+            </label>
+            <label>Cross-fade point detection Triggered at (dB). (default: -7.0)
+              <input type="text" name="crossfade_trigger_relative_db" value="{{ settings.crossfade_trigger_relative_db if settings and settings.crossfade_trigger_relative_db is not none else -7.0 }}">
+            </label>
+            <label>Fixed cross-fade point Time (sec). (default: 3.0)
+              <input type="text" name="crossfade_fallback_seconds" value="{{ settings.crossfade_fallback_seconds if settings and settings.crossfade_fallback_seconds is not none else 3.0 }}">
+            </label>
+            <label>Minimum crossfade window (sec) (default: 0.1)
+              <input type="text" name="crossfade_min_seconds" value="{{ settings.crossfade_min_seconds if settings and settings.crossfade_min_seconds is not none else 0.1 }}">
+            </label>
+            <label>Maximum crossfade window (sec) (default: 6.0)
+              <input type="text" name="crossfade_max_seconds" value="{{ settings.crossfade_max_seconds if settings and settings.crossfade_max_seconds is not none else 6.0 }}">
+            </label>
+            <label>Fade-out (sec) (default: 5.0)
+              <input type="text" name="crossfade_fade_out_seconds" value="{{ settings.crossfade_fade_out_seconds if settings and settings.crossfade_fade_out_seconds is not none else 5.0 }}">
+            </label>
+            <label class="studio-settings-inline-sentence">
+              <span>Do not crossfade or fade</span>
+              <input type="text" name="no_crossfade_max_duration_sec" value="{{ settings.no_crossfade_max_duration_sec if settings and settings.no_crossfade_max_duration_sec is not none else 65.0 }}">
+              <span>seconds or less in duration. (default: 65)</span>
+            </label>
+          </form>
+        </section>
+        <section class="studio-settings-section" data-settings-panel="autodj">
+          <form id="studio-autodj-form" class="studio-settings-form studio-autodj-form" autocomplete="off">
+            <div class="studio-autodj-options">
+              <div class="studio-autodj-option-row">
+                <span class="studio-autodj-option-label">Don't play same artist within (minutes)</span>
+                <input type="text" id="studio-autodj-no-repeat-artist" inputmode="numeric" pattern="[0-9]*" value="">
+              </div>
+              <div class="studio-autodj-option-row">
+                <span class="studio-autodj-option-label">Don't play same title within (minutes)</span>
+                <input type="text" id="studio-autodj-no-repeat-title" inputmode="numeric" pattern="[0-9]*" value="">
+              </div>
+              <div class="studio-autodj-option-row">
+                <span class="studio-autodj-option-label">Don't play same track within (minutes)</span>
+                <input type="text" id="studio-autodj-no-repeat-track" inputmode="numeric" pattern="[0-9]*" value="">
+              </div>
+              <div class="studio-autodj-option-row">
+                <span class="studio-autodj-option-label">Keep number of songs in the queue</span>
+                <input type="text" id="studio-autodj-keep-queue" inputmode="numeric" pattern="[0-9]*" value="">
+              </div>
+            </div>
+            <div class="studio-autodj-editor">
+              <div class="studio-autodj-editor__toolbar">
+                <div class="studio-autodj-editor__title">Rotation order</div>
+                <button type="button" id="studio-autodj-add-category" class="modal-btn modal-secondary">+ Category</button>
+                <button type="button" id="studio-autodj-load" class="modal-btn modal-secondary">Load</button>
+                <button type="button" id="studio-autodj-save" class="modal-btn modal-primary">Save</button>
+              </div>
+              <textarea id="studio-autodj-editor" class="studio-autodj-editor__textarea" spellcheck="false" placeholder="AutoDJ text file content will appear here."></textarea>
+            </div>
+          </form>
+        </section>
+        <section class="studio-settings-section" data-settings-panel="stations">
+          <div class="studio-users-section studio-stations-section">
+            <div class="studio-users-toolbar">
+              <div class="studio-users-toolbar__title">Stations</div>
+              <button type="button" id="studio-stations-add" class="modal-btn modal-primary">Add new station</button>
+            </div>
+            <div id="studio-stations-feedback" class="studio-settings-feedback" aria-live="polite"></div>
+            <div id="studio-stations-list" class="studio-users-list studio-stations-list" aria-live="polite"></div>
+          </div>
+        </section>
+        <section class="studio-settings-section" data-settings-panel="users">
+          <div class="studio-users-section">
+            <div class="studio-users-toolbar">
+              <div class="studio-users-toolbar__title">Users</div>
+              <button type="button" id="studio-users-add" class="modal-btn modal-primary">Add user</button>
+            </div>
+            <div id="studio-users-feedback" class="studio-settings-feedback" aria-live="polite"></div>
+            <div id="studio-users-list" class="studio-users-list" aria-live="polite"></div>
+          </div>
+        </section>
+        <section class="studio-settings-section" data-settings-panel="console">
+          <div class="studio-console-section">
+            <div class="studio-console-toolbar">
+              <div class="studio-console-toolbar__title">Console</div>
+              <div id="studio-console-status" class="studio-console-status is-disconnected">Disconnected</div>
+              <label class="studio-console-autoscroll">
+                <input type="checkbox" id="studio-console-autoscroll" checked>
+                Auto scroll
+              </label>
+              <button type="button" id="studio-console-pause" class="modal-btn modal-secondary">Pause</button>
+              <button type="button" id="studio-console-clear" class="modal-btn modal-secondary">Clear view</button>
+            </div>
+            <pre id="studio-console-output" class="studio-console-output" aria-label="Live read-only server console" tabindex="0"></pre>
+          </div>
+        </section>
+        <section class="studio-settings-section" data-settings-panel="about">
+          <div class="studio-users-section studio-about-section">
+            <div class="studio-users-toolbar">
+              <div class="studio-users-toolbar__title">About</div>
+            </div>
+            <div class="studio-about-copy">
+              <p><strong>Web Broadcaster</strong></p>
+              <p>Web Broadcaster is an advanced radio automation and streaming platform designed for 24/7 operation.</p>
+              <p>It combines dual-deck playback, automatic cue detection, intelligent crossfading, internet stream integration, metadata processing, and flexible playlist management into a single easy-to-use application.</p>
+              <p>Powered by Python, the native Web Broadcaster audio engine, and SQLite for reliable, high-quality audio delivery.</p>
+              <p>Version: {{ app_version }}</p>
+              <p>© 2026 Web Broadcaster Project</p>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+  <div class="panel-footer studio-floating-window__footer">
+    <div id="studio-settings-feedback" class="studio-settings-feedback" aria-live="polite"></div>
+    <div class="studio-settings-actions">
+      <button type="button" id="studio-settings-save" class="modal-btn modal-primary">Save settings</button>
+      <button type="button" id="studio-settings-footer-close" class="modal-btn modal-secondary">Close</button>
+    </div>
+  </div>
+  <div class="panel-resize-handle" aria-hidden="true"></div>
+</article>
+
+<article id="studio-users-add-window" class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered studio-users-add-window" aria-hidden="true" style="display:none;width:560px;height:430px;">
+  <div class="panel-titlebar studio-floating-window__titlebar">
+    <span>Add User</span>
+    <button type="button" id="studio-users-add-close" class="studio-window-close" aria-label="Close add user">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window panel-body--studio-users-add-window">
+    <form id="studio-users-add-form" class="studio-users-form studio-users-add-form" autocomplete="off">
+      <label>Username
+        <input type="text" id="studio-users-add-username" autocomplete="off">
+      </label>
+      <label>Password
+        <input type="password" id="studio-users-add-password" autocomplete="new-password">
+      </label>
+      <label>Confirm password
+        <input type="password" id="studio-users-add-password2" autocomplete="new-password">
+      </label>
+    </form>
+  </div>
+  <div class="panel-footer studio-floating-window__footer studio-users-add-window__footer">
+    <button type="submit" form="studio-users-add-form" id="studio-users-add-save" class="modal-btn modal-primary">Add User</button>
+    <button type="button" id="studio-users-add-cancel" class="modal-btn modal-secondary">Cancel</button>
+  </div>
+  <div class="panel-resize-handle" aria-hidden="true"></div>
+</article>
+
+<article id="studio-users-password-window" class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered studio-users-password-window" aria-hidden="true" style="display:none;width:560px;height:460px;">
+  <div class="panel-titlebar studio-floating-window__titlebar">
+    <span>Change Password</span>
+    <button type="button" id="studio-users-password-close" class="studio-window-close" aria-label="Close change password">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window panel-body--studio-users-add-window">
+    <form id="studio-users-password-form" class="studio-users-form studio-users-password-form" autocomplete="off">
+      <div id="studio-users-password-username" class="studio-users-form__meta"></div>
+      <label>Current password
+        <input type="password" id="studio-users-current-password" autocomplete="current-password">
+      </label>
+      <label>New password
+        <input type="password" id="studio-users-password1" autocomplete="new-password">
+      </label>
+      <label>Confirm password
+        <input type="password" id="studio-users-password2" autocomplete="new-password">
+      </label>
+    </form>
+  </div>
+  <div class="panel-footer studio-floating-window__footer studio-users-add-window__footer">
+    <button type="submit" form="studio-users-password-form" id="studio-users-password-save" class="modal-btn modal-primary">Save</button>
+    <button type="button" id="studio-users-password-cancel" class="modal-btn modal-secondary">Cancel</button>
+  </div>
+  <div class="panel-resize-handle" aria-hidden="true"></div>
+</article>
+
+<article id="studio-users-delete-window" class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--dialog studio-floating-window--no-resize studio-users-delete-window" aria-hidden="true" data-min-width="420" data-min-height="180" style="display:none;width:420px;height:180px;">
+  <div class="panel-titlebar studio-floating-window__titlebar">
+    <span>Delete User</span>
+    <button type="button" id="studio-users-delete-close" class="studio-window-close" aria-label="Close delete user">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window panel-body--studio-users-delete-window">
+    <div id="studio-users-delete-message" class="studio-users-delete-message">Are you sure you want to delete this user?</div>
+  </div>
+  <div class="panel-footer studio-floating-window__footer studio-users-delete-window__footer">
+    <button type="button" id="studio-users-delete-confirm" class="modal-btn modal-primary">Delete</button>
+    <button type="button" id="studio-users-delete-cancel" class="modal-btn modal-secondary">Cancel</button>
+  </div>
+</article>
+
+
+<article id="studio-autodj-category-window" class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered studio-autodj-category-window" aria-hidden="true" style="display:none;">
+  <div class="panel-titlebar studio-floating-window__titlebar">
+    <span>Select category</span>
+    <button type="button" id="studio-autodj-category-close" class="studio-window-close" aria-label="Close">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window">
+    <div class="studio-autodj-category-layout">
+      <section class="studio-autodj-category-list">
+        <div class="studio-autodj-category-list__label">Categories</div>
+        <div id="studio-autodj-category-list" class="studio-autodj-category-list__items" tabindex="0"></div>
+      </section>
+      <aside class="studio-autodj-category-options">
+        <label class="studio-autodj-category-check">
+          <input type="checkbox" id="studio-autodj-category-norules">
+          <span>NoRules</span>
+        </label>
+      </aside>
+    </div>
+  </div>
+  <div class="panel-footer studio-floating-window__footer">
+    <button type="button" id="studio-autodj-category-ok" class="modal-btn modal-primary">OK</button>
+    <button type="button" id="studio-autodj-category-cancel" class="modal-btn modal-secondary">Cancel</button>
+  </div>
+  <div class="panel-resize-handle" aria-hidden="true"></div>
+</article>
+
+
+<article id="studio-autodj-save-window" class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered" aria-hidden="true" style="display:none;">
+  <div class="panel-titlebar studio-floating-window__titlebar">
+    <span id="studio-autodj-save-title">Save AutoDJ Text File</span>
+    <button type="button" id="studio-autodj-save-close" class="studio-window-close" aria-label="Close">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window">
+    <div class="browser-toolbar">
+      <div class="browser-path-label">Base music directory</div>
+      <div class="browser-breadcrumb" id="studio-autodj-save-breadcrumb"></div>
+    </div>
+    <div class="browser-table studio-autodj-save-browser">
+      <div class="browser-table__header">
+        <div class="browser-table__name">Folder</div>
+        <div class="browser-table__duration"></div>
+      </div>
+      <div class="browser-table__rows" id="studio-autodj-save-rows" tabindex="0"></div>
+    </div>
+    <label class="studio-autodj-save-field" for="studio-autodj-save-filename">
+      <span class="studio-autodj-save-field__label">Filename</span>
+      <input type="text" id="studio-autodj-save-filename" class="text-input studio-autodj-save-field__input" autocomplete="off" spellcheck="false" placeholder="autodj_YYYYMMDD_HHMMSS.adj">
+    </label>
+    <div id="studio-autodj-save-summary" class="browser-footer">Select a folder under Base music directory.</div>
+  </div>
+  <div class="panel-footer studio-floating-window__footer">
+    <button type="button" id="studio-autodj-save-confirm" class="modal-btn modal-primary">Save</button>
+    <button type="button" id="studio-autodj-save-cancel" class="modal-btn modal-secondary">Cancel</button>
+  </div>
+  <div class="panel-resize-handle" aria-hidden="true"></div>
+</article>
+
+
+<article id="studio-autodj-load-window" class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered" aria-hidden="true" style="display:none;">
+  <div class="panel-titlebar studio-floating-window__titlebar">
+    <span id="studio-autodj-load-title">Load AutoDJ Text File</span>
+    <button type="button" id="studio-autodj-load-close" class="studio-window-close" aria-label="Close">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window">
+    <div class="browser-toolbar">
+      <div class="browser-path-label">Base music directory</div>
+      <div class="browser-breadcrumb" id="studio-autodj-load-breadcrumb"></div>
+    </div>
+    <div class="browser-table studio-autodj-save-browser">
+      <div class="browser-table__header">
+        <div class="browser-table__name">Name</div>
+        <div class="browser-table__duration"></div>
+      </div>
+      <div class="browser-table__rows" id="studio-autodj-load-rows" tabindex="0"></div>
+    </div>
+    <div id="studio-autodj-load-summary" class="browser-footer">Select an .adj file under Base music directory.</div>
+  </div>
+  <div class="panel-footer studio-floating-window__footer">
+    <button type="button" id="studio-autodj-load-confirm" class="modal-btn modal-primary">Load</button>
+    <button type="button" id="studio-autodj-load-cancel" class="modal-btn modal-secondary">Cancel</button>
+  </div>
+  <div class="panel-resize-handle" aria-hidden="true"></div>
+</article>
+
+<article id="studio-search-window" class="studio-panel studio-floating-window studio-search-window studio-floating-window--centered" aria-hidden="true" style="display:none;">
+  <div class="panel-titlebar studio-floating-window__titlebar">
+    <span id="studio-search-title">Search Tracks</span>
+    <button type="button" id="studio-search-close" class="studio-window-close" aria-label="Close search">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window panel-body--studio-search">
+    <input type="text" id="studio-search-input" class="text-input studio-search-input" placeholder="Type at least 3 characters..." autocomplete="off">
+    <div id="studio-search-hint" class="studio-search-hint">Double-click one track to add it immediately. Use Ctrl-click or Shift-click to select multiple tracks.</div>
+    <div id="studio-search-results" class="studio-search-results"></div>
+  </div>
+  <div class="panel-footer studio-floating-window__footer">
+    <button type="button" id="studio-search-add" class="modal-btn modal-primary" disabled>Add selected to queue (0)</button>
+    <button type="button" id="studio-search-footer-close" class="modal-btn modal-secondary">Close</button>
+  </div>
+  <div class="panel-resize-handle" aria-hidden="true"></div>
+</article>
+
+<article id="playlist-add-url-window" class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered" aria-hidden="true" style="display:none;">
+  <div class="panel-titlebar studio-floating-window__titlebar">
+    <span id="playlist-add-url-title">Add URL to Queue</span>
+    <button type="button" id="playlist-add-url-close" class="studio-window-close" aria-label="Close">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window panel-body--url-window">
+    <div class="url-form">
+      <label class="url-form__label" for="playlist-add-url-input">Stream URL</label>
+      <input type="url" id="playlist-add-url-input" class="url-form__input" placeholder="http://radio.com:8000" autocomplete="off" spellcheck="false">
+      <div class="url-form__hint">The stream will be added to the queue as an infinite URL item.</div>
+    </div>
+  </div>
+  <div class="panel-footer studio-floating-window__footer">
+    <button type="button" id="playlist-add-url-ok" class="modal-btn modal-primary">Add URL</button>
+    <button type="button" id="playlist-add-url-cancel" class="modal-btn modal-secondary">Cancel</button>
+  </div>
+  <div class="panel-resize-handle" aria-hidden="true"></div>
+</article>
+<article id="playlist-add-files-window" class="studio-panel studio-floating-window studio-floating-window--centered" aria-hidden="true" style="display:none;">
+  <div class="panel-titlebar studio-floating-window__titlebar">
+    <span id="playlist-add-files-title">Add Files to Category</span>
+    <button type="button" id="playlist-add-files-close" class="studio-window-close" aria-label="Close">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window">
+    <div class="browser-toolbar">
+      <div class="browser-path-label">Base music directory</div>
+      <div class="browser-breadcrumb" id="playlist-browser-breadcrumb"></div>
+    </div>
+    <div class="browser-table">
+      <div class="browser-table__header">
+        <div class="browser-table__name">Name</div>
+        <div class="browser-table__duration">Duration</div>
+      </div>
+      <div class="browser-table__rows" id="playlist-browser-rows" tabindex="0"></div>
+    </div>
+    <div class="browser-footer" id="playlist-browser-summary">0 files selected</div>
+  </div>
+  <div class="panel-footer studio-floating-window__footer">
+    <button type="button" id="playlist-add-files-ok" class="modal-btn modal-primary">Add Files</button>
+    <button type="button" id="playlist-add-files-cancel" class="modal-btn modal-secondary">Cancel</button>
+  </div>
+  <div class="panel-resize-handle" aria-hidden="true"></div>
+</article>
+
+<article id="scripts-add-script-window" class="studio-panel studio-floating-window studio-floating-window--centered" aria-hidden="true" style="display:none;">
+  <div class="panel-titlebar studio-floating-window__titlebar">
+    <span id="scripts-add-script-title">Add Script</span>
+    <button type="button" id="scripts-add-script-close" class="studio-window-close" aria-label="Close">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window">
+    <div class="browser-toolbar">
+      <div class="browser-path-label">Base directory</div>
+      <div class="browser-breadcrumb" id="scripts-browser-breadcrumb"></div>
+    </div>
+    <div class="browser-table">
+      <div class="browser-table__header">
+        <div class="browser-table__name">Name</div>
+        <div class="browser-table__duration">Auto</div>
+      </div>
+      <div class="browser-table__rows" id="scripts-browser-rows" tabindex="0"></div>
+    </div>
+    <div class="browser-footer" id="scripts-browser-summary">0 files selected</div>
+    <label class="encoder-config-checkbox" for="scripts-auto-start" style="margin-top:10px;">
+      <input type="checkbox" id="scripts-auto-start">
+      <span>Automatically start script</span>
+    </label>
+  </div>
+  <div class="panel-footer studio-floating-window__footer">
+    <button type="button" id="scripts-add-script-ok" class="modal-btn modal-primary">Add Script</button>
+    <button type="button" id="scripts-add-script-cancel" class="modal-btn modal-secondary">Cancel</button>
+  </div>
+  <div class="panel-resize-handle" aria-hidden="true"></div>
+</article>
+
+<article id="scripts-config-window" class="studio-panel studio-floating-window studio-floating-window--centered" aria-hidden="true" style="display:none;">
+  <div class="panel-titlebar studio-floating-window__titlebar">
+    <span id="scripts-config-title">Script Configuration</span>
+    <button type="button" id="scripts-config-close" class="studio-window-close" aria-label="Close">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window">
+    <label class="encoder-config-checkbox" for="scripts-config-auto-start" style="margin-bottom:16px;">
+      <input type="checkbox" id="scripts-config-auto-start">
+      <span>Automatically start script</span>
+    </label>
+    <div class="browser-toolbar" style="margin-top:0;">
+      <div class="browser-path-label">Script source file</div>
+      <div class="browser-breadcrumb" id="scripts-config-file-path"></div>
+    </div>
+    <div class="scripts-config-editor">
+      <div class="scripts-config-editor__toolbar">
+        <div class="scripts-config-editor__title">Script file content</div>
+      </div>
+      <textarea id="scripts-config-editor" class="scripts-config-editor__textarea" spellcheck="false" placeholder="Script file content will appear here."></textarea>
+    </div>
+  </div>
+  <div class="panel-footer studio-floating-window__footer">
+    <button type="button" id="scripts-config-ok" class="modal-btn modal-primary">OK</button>
+    <button type="button" id="scripts-config-cancel" class="modal-btn modal-secondary">Cancel</button>
+  </div>
+  <div class="panel-resize-handle" aria-hidden="true"></div>
+</article>
+
+
+
+
+<article id="studio-station-delete-confirm-backdrop" class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered studio-floating-window--dialog studio-floating-window--no-resize studio-users-delete-window" aria-hidden="true" data-min-width="420" data-min-height="180" style="display:none;width:420px;height:180px;">
+  <div class="panel-titlebar studio-floating-window__titlebar">
+    <span id="studio-station-delete-confirm-title">Delete Station</span>
+    <button type="button" id="studio-station-delete-confirm-close" class="studio-window-close" aria-label="Close delete station">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window panel-body--studio-users-delete-window">
+    <div id="studio-station-delete-confirm-body" class="studio-users-delete-message">Are you sure you want to delete this station?</div>
+  </div>
+  <div class="panel-footer studio-floating-window__footer studio-users-delete-window__footer">
+    <button type="button" id="studio-station-delete-confirm-yes" class="modal-btn modal-primary">Delete</button>
+    <button type="button" id="studio-station-delete-confirm-no" class="modal-btn modal-secondary">Cancel</button>
+  </div>
+</article>
+
+<article id="studio-station-delete-password-backdrop" class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered studio-floating-window--no-resize studio-users-password-window" aria-hidden="true" data-min-width="460" data-min-height="230" style="display:none;width:460px;height:230px;">
+  <div class="panel-titlebar studio-floating-window__titlebar">
+    <span id="studio-station-delete-password-title">Confirm Password</span>
+    <button type="button" id="studio-station-delete-password-close" class="studio-window-close" aria-label="Close station password">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window panel-body--studio-users-add-window">
+    <div class="muted" id="studio-station-delete-password-body">Enter your password to confirm deletion.</div>
+    <input type="password" id="studio-station-delete-password-input" class="text-input" autocomplete="current-password" placeholder="Password" />
+    <div class="muted" id="studio-station-delete-password-error" style="display:none;margin-top:8px;color:#c00;"></div>
+  </div>
+  <div class="panel-footer studio-floating-window__footer studio-users-add-window__footer">
+    <button type="button" id="studio-station-delete-password-yes" class="modal-btn modal-primary">Delete</button>
+    <button type="button" id="studio-station-delete-password-no" class="modal-btn modal-secondary">Cancel</button>
+  </div>
+</article>
+
+<article id="studio-station-rename-backdrop" class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered studio-floating-window--no-resize studio-users-password-window" aria-hidden="true" data-min-width="460" data-min-height="230" style="display:none;width:460px;height:230px;">
+  <div class="panel-titlebar studio-floating-window__titlebar">
+    <span id="studio-station-rename-title">Rename Station</span>
+    <button type="button" id="studio-station-rename-close" class="studio-window-close" aria-label="Close rename station">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window panel-body--studio-users-add-window">
+    <div class="muted" id="studio-station-rename-body">Enter the new station name.</div>
+    <input type="text" id="studio-station-rename-input" class="text-input" autocomplete="off" placeholder="New station name" />
+    <div class="muted" id="studio-station-rename-error" style="display:none;margin-top:8px;color:#c00;"></div>
+  </div>
+  <div class="panel-footer studio-floating-window__footer studio-users-add-window__footer">
+    <button type="button" id="studio-station-rename-yes" class="modal-btn modal-primary">Rename</button>
+    <button type="button" id="studio-station-rename-no" class="modal-btn modal-secondary">Cancel</button>
+  </div>
+</article>
+
+<div id="studio-add-station-backdrop" class="modal-backdrop" aria-hidden="true">
+  <div class="modal modal--studio-station" role="dialog" aria-modal="true" aria-labelledby="studio-add-station-title">
+    <div class="panel-titlebar studio-floating-window__titlebar modal-titlebar modal-titlebar--studio-station" id="studio-add-station-titlebar">
+      <span id="studio-add-station-title">Add New Station</span>
+      <button type="button" id="studio-add-station-close" class="studio-window-close" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body modal-body--studio-station">
+      <form id="studio-add-station-form" class="studio-station-form">
+        <label class="studio-station-field">
+          <span>Radio name</span>
+          <input type="text" name="radio_name" value="{{ new_station_defaults.radio_name }}" autocomplete="off">
+        </label>
+        <div class="studio-station-section-title">Station Settings</div>
+        <label class="studio-station-field">
+          <span>Base music directory</span>
+          <input type="text" name="music_library_path" value="{{ new_station_defaults.music_library_path }}" autocomplete="off">
+        </label>
+        <div class="studio-station-section-title studio-soundsolution-title-row">
+          <span>SoundSolution Settings (DSP Sound Processor)</span>
+          <label class="studio-soundsolution-checkbox" aria-label="Enable DSP Sound Processor">
+            <input type="checkbox" name="soundsolution_enabled" {{ "checked" if (new_station_defaults.dsp_enabled if new_station_defaults and new_station_defaults.dsp_enabled is not none else 1) else "" }}>
+            <span>Enable DSP</span>
+          </label>
+        </div>
+        <label class="studio-station-field">
+          <span>SoundSolution .dat configuration (Change only if necessary)</span>
+          <input type="text" name="soundsolution_path" value="{{ new_station_defaults.soundsolution_path }}" autocomplete="off">
+        </label>
+      </form>
+      <div id="studio-add-station-error" class="studio-station-error" style="display:none;"></div>
+    </div>
+    <div class="modal-actions modal-actions--studio-station">
+      <button type="button" id="studio-add-station-save" class="modal-btn modal-primary">Add New Station</button>
+      <button type="button" id="studio-add-station-cancel" class="modal-btn modal-secondary">Cancel</button>
+    </div>
+    <div class="panel-resize-handle" aria-hidden="true"></div>
+  </div>
+</div>
+</div>
+
+
+{% endblock %}
+{% block extra_body %}
+<script src="{{ url_for('static', filename='scheduler.js') }}" defer></script>
+
+<style>
+  input#run_date.scheduler-dark-field { background: inherit !important; padding-right: 12px !important; -webkit-appearance: none; -moz-appearance: textfield; appearance: none; }
+  input#run_date.scheduler-dark-field::-webkit-calendar-picker-indicator { display: none !important; opacity: 0; cursor: pointer; }
+  input#run_date.scheduler-dark-field::-webkit-inner-spin-button { display: none !important; }
+  select.scheduler-dark-field { color: #e5e7eb !important; padding-left: 12px !important; text-indent: 0 !important; padding-right: 44px !important; background-position: right 12px center !important; }
+  select#run_weekday.scheduler-dark-field,
+  select#run_weekday.scheduler-dark-field option,
+  select[name="priority"].scheduler-dark-field { background-color: var(--input-bg, #0f172a) !important; color: #e5e7eb !important; }
+  .modal { position: relative; }
+  .modal-body { padding-top: 8px; padding-bottom: 44px; }
+  .modal-actions { position: absolute; right: 22px; bottom: 18px; display: flex; gap: 10px; justify-content: flex-end; align-items: center; z-index: 5; }
+  .scheduler-form-grid label { margin-bottom: 4px; }
+  .scheduler-form-grid-v540 { display: grid; grid-template-columns: 1fr 1fr; column-gap: 26px; row-gap: 12px; align-items: start; }
+  .scheduler-form-grid-v540 .sb-field { display: block; }
+  .sb-time-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+  .sb-recurring { display:inline-flex; align-items:center; gap:8px; margin:0; font-weight:600; white-space:nowrap; justify-content:flex-start; }
+  .sb-recurring input[type="checkbox"] { width:auto; margin-top:0; padding:0; flex:0 0 auto; }
+  .sb-autostart { margin-top: 10px; width: auto; }
+  .sb-action-block { grid-column: 1 / span 2; margin-top: 0; }
+  .sb-action-title { font-weight: 600; margin-bottom: 2px; }
+  .sb-action-help { margin-top: 2px; color: #666; }
+  .sb-action-items-row { display:flex; margin-top: 10px; align-items: stretch; }
+  .sb-action-items-main { flex: 1; }
+  .sb-action-items-buttons { display:flex; flex-direction:column; gap:8px; margin-left:12px; justify-content:center; }
+  .sb-priority { grid-column: 1 / span 2; margin-top: 2px; }
+  #scheduler-modal-backdrop { background: transparent; align-items: flex-start; justify-content: flex-start; padding: 0; }
+  .modal--scheduler-config {
+    position: fixed;
+    left: 50%;
+    top: 24px;
+    right: auto;
+    bottom: auto;
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    width: min(920px, calc(100vw - 64px));
+    height: min(620px, calc(100vh - 32px));
+    max-width: calc(100vw - 16px);
+    max-height: calc(100vh - 16px);
+    min-width: 560px;
+    min-height: 360px;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    border-radius: 10px;
+    background: linear-gradient(180deg,#243244 0%, #162131 100%);
+    border: 1px solid rgba(148,163,184,.34);
+    box-shadow: 0 18px 42px rgba(2,6,23,.58);
+  }
+  .modal--scheduler-config.is-dragging,
+  .modal--scheduler-config.is-resizing { user-select: none; }
+  .modal-titlebar--scheduler {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:12px;
+    margin:0;
+    padding:5px 8px;
+    cursor:move;
+    user-select:none;
+  }
+  .modal-titlebar--scheduler span { font-size:14px; font-weight:700; color:#f8fafc; letter-spacing:.02em; }
+  .modal--scheduler-config .modal-body {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 10px 14px 0;
+    background: linear-gradient(180deg,#182230 0%, #0f172a 100%);
+    margin-bottom: 0;
+  }
+  .modal--scheduler-config #scheduler-new-rule-form { display: flex; flex: 1 1 auto; min-height: 0; }
+  .modal--scheduler-config #scheduler-new-rule-form > div:first-child { display: flex; flex: 1 1 auto; min-height: 0; }
+  .modal-actions--scheduler {
+    position: static !important;
+    right: auto !important;
+    bottom: auto !important;
+    z-index: auto !important;
+    display:flex;
+    flex: 0 0 auto;
+    justify-content:flex-end;
+    align-items:center;
+    gap:10px;
+    padding:0 14px 14px;
+    background: linear-gradient(180deg,#182230 0%, #0f172a 100%);
+  }
+  .scheduler-form-error {
+    display: none;
+    flex: 1 1 auto;
+    min-width: 0;
+    margin-right: auto;
+    padding: 0 8px 0 0;
+    color: #fca5a5;
+    font-size: 13px;
+    line-height: 1.35;
+    font-weight: 600;
+    text-align: left;
+    align-self: center;
+  }
+  .modal-actions--scheduler .modal-btn {
+    min-width:120px;
+    padding:.45rem .9rem;
+    border-radius:999px;
+    border:1px solid rgba(148,163,184,0.35);
+    background:rgba(15,23,42,0.9);
+    color:#e5e7eb;
+    box-shadow:none;
+    height:auto;
+  }
+  .modal-actions--scheduler .modal-btn:hover { opacity:.95; filter:none; }
+  .modal-actions--scheduler .modal-btn.modal-primary { background:#0ea5e9; border-color:transparent; color:#ffffff; }
+  .modal-actions--scheduler .modal-btn.modal-secondary { background:rgba(148,163,184,0.12); border-color:rgba(148,163,184,0.35); color:#e5e7eb; }
+  @media (max-width: 820px) {
+    .modal--scheduler-config {
+      min-width: 0;
+      width: calc(100vw - 24px);
+      height: min(620px, calc(100vh - 24px));
+    }
+  }
+
+</style>
+
+<div id="scheduler-modal-backdrop" class="modal-backdrop" aria-hidden="true" style="display:none;">
+  <div class="modal modal--scheduler-config" role="dialog" aria-modal="true" aria-labelledby="scheduler-modal-title">
+    <div class="panel-titlebar studio-floating-window__titlebar modal-titlebar modal-titlebar--scheduler" id="scheduler-modal-titlebar">
+      <span id="scheduler-modal-title">New rule</span>
+      <button type="button" id="scheduler-modal-close" class="studio-window-close" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <form id="scheduler-new-rule-form">
+        <input type="hidden" name="run_when" id="run_when" value="">
+        <input type="hidden" name="insert_kind" id="insert_kind" value="file">
+        <input type="hidden" name="insert_value" id="insert_value" value="">
+        <div class="scheduler-form-grid scheduler-form-grid-v540">
+          <div class="sb-field">
+            <label>
+              Name
+              <input type="text" name="name" required placeholder="Exact time announcement">
+            </label>
+            <label class="sb-recurring sb-autostart">
+              <input type="checkbox" name="auto_start" id="auto_start_rule">
+              Automatically start rule
+            </label>
+          </div>
+          <label class="sb-field">
+            Time options
+            <div id="time-row" class="sb-time-row">
+              <label class="sb-recurring">
+                <input type="checkbox" id="recurring_event" name="recurring_event">
+                Recurring Event
+              </label>
+              <input type="date" name="run_date" id="run_date" class="scheduler-dark-field">
+              <select name="run_weekday" id="run_weekday" class="scheduler-dark-field scheduler-every-option" style="display:none;">
+                <option value="Everyday" class="scheduler-every">Everyday</option>
+                <option value="Monday">Monday</option>
+                <option value="Tuesday">Tuesday</option>
+                <option value="Wednesday">Wednesday</option>
+                <option value="Thursday">Thursday</option>
+                <option value="Friday">Friday</option>
+                <option value="Saturday">Saturday</option>
+                <option value="Sunday">Sunday</option>
+              </select>
+              <input type="time" name="run_time" id="run_time" class="scheduler-dark-field">
+            </div>
+          </label>
+          <div class="sb-action-block">
+            <div class="sb-action-title">Action</div>
+            <div><strong>Add files to Queue</strong></div>
+            <div class="sb-action-help">Select files or URLs to add — they will be appended to the scheduler action list.</div>
+            <div class="sb-action-items-row">
+              <div class="sb-action-items-main">
+                <label class="sb-field" style="margin:0;">
+                  Action items
+                  <input type="hidden" name="action_script" id="action_script" value="">
+                  <div id="scheduler-action-items" class="queue-list scheduler-action-items" tabindex="0"></div>
+                </label>
+              </div>
+              <div class="sb-action-items-buttons">
+                <button type="button" id="scheduler-add-file" class="modal-btn">Add File</button>
+                <button type="button" id="scheduler-add-dir" class="modal-btn">Add Dir</button>
+                <button type="button" id="scheduler-add-url" class="modal-btn">Add URL</button>
+              </div>
+            </div>
+          </div>
+          <label class="sb-field sb-priority">
+            Priority in Queue
+            <select name="priority" required class="scheduler-dark-field">
+              <option value="next">Next</option>
+              <option value="immediate">Immediate</option>
+              <option value="end">End</option>
+            </select>
+          </label>
+        </div>
+      </form>
+    </div>
+    <div class="modal-actions modal-actions--scheduler">
+      <div class="scheduler-form-error" id="scheduler-form-error"></div>
+      <button type="button" id="scheduler-modal-save" class="modal-btn modal-primary">Save</button>
+      <button type="button" id="scheduler-modal-cancel" class="modal-btn modal-secondary">Cancel</button>
+    </div>
+    <div class="panel-resize-handle" aria-hidden="true"></div>
+  </div>
+</div>
+
+
+<article id="scheduler-rule-delete-window" class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered studio-floating-window--dialog studio-floating-window--no-resize studio-users-delete-window" aria-hidden="true" data-min-width="420" data-min-height="180" style="display:none;width:420px;height:180px;">
+  <div class="panel-titlebar studio-floating-window__titlebar" id="scheduler-rule-delete-titlebar">
+    <span id="scheduler-rule-delete-title">Delete rule</span>
+    <button type="button" id="scheduler-rule-delete-close" class="studio-window-close" aria-label="Close delete rule">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window panel-body--studio-users-delete-window">
+    <div id="scheduler-rule-delete-body" class="studio-users-delete-message">Are you sure you want to delete this rule?</div>
+  </div>
+  <div class="panel-footer studio-floating-window__footer studio-users-delete-window__footer">
+    <button type="button" id="scheduler-rule-delete-yes" class="modal-btn modal-primary">Delete</button>
+    <button type="button" id="scheduler-rule-delete-no" class="modal-btn modal-secondary">Cancel</button>
+  </div>
+</article>
+
+<style>
+  #scheduler-url-modal-backdrop,
+  #scheduler-file-modal-backdrop {
+    background: transparent;
+    align-items: flex-start;
+    justify-content: flex-start;
+    padding: 0;
+    z-index: 60;
+  }
+  .modal--scheduler-floating {
+    position: fixed;
+    inset: auto auto auto auto;
+    margin: 0;
+    transform: none;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border-radius: 10px;
+    background: linear-gradient(180deg,#1f2937 0%, #111827 100%);
+    border: 1px solid rgba(148,163,184,.22);
+    box-shadow: 0 10px 24px rgba(0,0,0,.26);
+    color: #e5e7eb;
+  }
+  .modal--scheduler-floating.is-dragging,
+  .modal--scheduler-floating.is-resizing { user-select: none; }
+  .modal--scheduler-floating .modal-body {
+    display:flex;
+    flex:1 1 auto;
+    min-height:0;
+    overflow:auto;
+    padding:10px 12px;
+    background:linear-gradient(180deg,#182230 0%, #0f172a 100%);
+  }
+  .modal--scheduler-floating .modal-actions {
+    display:flex;
+    align-items:center;
+    justify-content:flex-end;
+    gap:8px;
+    min-height:28px;
+    padding:4px 8px;
+    border-top:1px solid rgba(148,163,184,.2);
+    background:linear-gradient(180deg,#0f172a 0%, #111827 100%);
+    font-size:12px;
+    color:#cbd5e1;
+  }
+  .modal--scheduler-floating .modal-btn {
+    min-width:120px;
+    padding:.45rem .9rem;
+    border-radius:999px;
+    border:1px solid rgba(148,163,184,0.35);
+    background:rgba(15,23,42,0.9);
+    color:#e5e7eb;
+    box-shadow:none;
+    height:auto;
+    font-weight:600;
+  }
+  .modal--scheduler-floating .modal-btn:hover { opacity:.95; filter:none; }
+  .modal--scheduler-floating .modal-btn.modal-primary {
+    background:#0ea5e9;
+    border-color:transparent;
+    color:#ffffff;
+  }
+  .modal--scheduler-floating .modal-btn.modal-secondary {
+    background:rgba(148,163,184,0.12);
+    border-color:rgba(148,163,184,0.35);
+    color:#e5e7eb;
+  }
+  #scheduler-url-modal {
+    width:560px !important;
+    height:260px !important;
+  }
+  #scheduler-url-modal .modal-body {
+    padding:14px 14px 10px;
+  }
+  .scheduler-url-form {
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+    width:100%;
+    min-height:0;
+  }
+  .scheduler-url-field {
+    display:flex;
+    flex-direction:column;
+    gap:5px;
+    margin:0;
+    color:#cbd5e1;
+    font-size:12px;
+    line-height:1.2;
+  }
+  .scheduler-url-row {
+    display:flex;
+    align-items:center;
+    gap:12px;
+    flex-wrap:wrap;
+  }
+  #scheduler-url-modal .scheduler-dark-field {
+    height:34px;
+    padding:0 10px;
+    border:1px solid rgba(148,163,184,.28);
+    background:#0f172a !important;
+    color:#e5eefc !important;
+    border-radius:4px;
+    font:inherit;
+    font-size:12px;
+    outline:none;
+    box-shadow:none;
+  }
+  #scheduler-url-modal .scheduler-dark-field:focus {
+    border-color:rgba(96,165,250,.8);
+    box-shadow:0 0 0 1px rgba(96,165,250,.35);
+  }
+  #scheduler-url-input {
+    width:100%;
+    min-width:280px;
+  }
+  #scheduler-url-duration {
+    width:120px;
+  }
+  .scheduler-url-infinite {
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+    margin:0;
+    color:#cbd5e1;
+    font-size:12px;
+    line-height:1.2;
+  }
+  .scheduler-url-infinite input {
+    width:auto;
+    margin:0;
+    accent-color:#0ea5e9;
+  }
+  .scheduler-url-help {
+    font-size:11px;
+    color:#94a3b8;
+    line-height:1.4;
+    margin-top:2px;
+  }
+  .scheduler-file-modal-grid {
+    display:grid;
+    grid-template-columns: 320px minmax(420px, 1fr);
+    gap: 12px;
+    min-height: 0;
+    height: 100%;
+  }
+  .scheduler-file-modal-pane {
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+    min-height: 0;
+  }
+  .scheduler-file-modal-list {
+    flex: 1 1 auto;
+    min-height: 180px;
+    overflow-y:auto;
+    overflow-x:auto;
+  }
+  .scheduler-floating-help {
+    font-size:11px;
+    color:#94a3b8;
+    line-height:1.4;
+  }
+</style>
+
+<div id="scheduler-url-modal-backdrop" class="modal-backdrop" aria-hidden="true" style="display:none;">
+  <div class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered modal--scheduler-floating" id="scheduler-url-modal" role="dialog" aria-modal="true" aria-labelledby="scheduler-url-modal-title" data-min-width="520" data-min-height="250" style="width:520px;height:250px;">
+    <div class="panel-titlebar studio-floating-window__titlebar modal-titlebar" id="scheduler-url-modal-titlebar">
+      <span id="scheduler-url-modal-title">Add URL</span>
+      <button type="button" id="scheduler-url-close" class="studio-window-close" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body panel-body panel-body--browser-window panel-body--url-window">
+      <div class="scheduler-url-form">
+        <label class="scheduler-url-field" for="scheduler-url-input">
+          Stream URL
+          <input type="text" id="scheduler-url-input" class="scheduler-dark-field" placeholder="https://" autocomplete="off" spellcheck="false" />
+        </label>
+        <div class="scheduler-url-row">
+          <label class="scheduler-url-field" for="scheduler-url-duration">
+            Duration (seconds)
+            <input type="text" id="scheduler-url-duration" class="scheduler-dark-field" inputmode="numeric" pattern="[0-9]*" placeholder="60" />
+          </label>
+          <label class="scheduler-url-infinite">
+            <input type="checkbox" id="scheduler-url-infinite" />
+            Infinite
+          </label>
+        </div>
+        <div class="scheduler-url-help">Press Enter to add, Esc to cancel.</div>
+      </div>
+    </div>
+    <div class="modal-actions panel-footer studio-floating-window__footer">
+      <button type="button" id="scheduler-url-ok" class="modal-btn modal-primary">OK</button>
+      <button type="button" id="scheduler-url-cancel" class="modal-btn modal-secondary">Cancel</button>
+    </div>
+    <div class="panel-resize-handle" aria-hidden="true"></div>
+  </div>
+</div>
+
+<div id="scheduler-file-modal-backdrop" class="modal-backdrop" aria-hidden="true" style="display:none;">
+  <div class="studio-panel studio-floating-window studio-floating-window--centered modal--scheduler-floating" id="scheduler-file-modal" role="dialog" aria-modal="true" aria-labelledby="scheduler-file-modal-title" data-min-width="760" data-min-height="470" style="width:860px;height:560px;">
+    <div class="panel-titlebar studio-floating-window__titlebar modal-titlebar" id="scheduler-file-modal-titlebar">
+      <span id="scheduler-file-modal-title">Add File</span>
+      <button type="button" id="scheduler-file-close" class="studio-window-close" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body panel-body panel-body--browser-window">
+      <div class="scheduler-file-modal-grid">
+        <div class="scheduler-file-modal-pane">
+          <div style="font-weight:600; opacity:0.9;">Categories</div>
+          <div id="scheduler-file-categories" class="files-list sb-hscroll scheduler-file-modal-list"></div>
+        </div>
+        <div class="scheduler-file-modal-pane">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+            <div style="font-weight:600; opacity:0.9;" id="scheduler-file-tracks-title">Tracks</div>
+            <div style="font-size:0.8rem; opacity:0.8;">Double click to add</div>
+          </div>
+          <div id="scheduler-file-tracks" class="files-list sb-hscroll scheduler-file-modal-list"></div>
+        </div>
+      </div>
+      <div class="scheduler-floating-help" style="margin-top: 10px;">Select a track from a category. Esc to cancel.</div>
+    </div>
+    <div class="modal-actions panel-footer studio-floating-window__footer">
+      <button type="button" id="scheduler-file-ok" class="modal-btn modal-primary" disabled>Add</button>
+      <button type="button" id="scheduler-file-cancel" class="modal-btn modal-secondary">Cancel</button>
+    </div>
+    <div class="panel-resize-handle" aria-hidden="true"></div>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='broadcaster.js', v=app_version) }}"></script>
+
+
+{% endblock %}

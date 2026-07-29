@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Power button icon.
+  Color is controlled via CSS `color` (currentColor).
+  OFF should be red, ON should be green.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 200 200">
+  <defs>
+    <radialGradient id="bg" cx="35%" cy="30%" r="80%">
+      <stop offset="0%" stop-color="#2a2a2a"/>
+      <stop offset="55%" stop-color="#141414"/>
+      <stop offset="100%" stop-color="#0a0a0a"/>
+    </radialGradient>
+
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feColorMatrix in="b" type="matrix"
+        values="1 0 0 0 0
+                0 1 0 0 0
+                0 0 1 0 0
+                0 0 0 0.85 0" result="c"/>
+      <feMerge>
+        <feMergeNode in="c"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <symbol id="powerButton" viewBox="0 0 200 200">
+      <!-- outer shadow -->
+      <circle cx="100" cy="100" r="88" fill="#000" opacity="0.35"/>
+
+      <!-- button body -->
+      <circle cx="100" cy="100" r="82" fill="url(#bg)"/>
+
+      <!-- subtle rim -->
+      <circle cx="100" cy="100" r="82" fill="none" stroke="#2b2b2b" stroke-width="2" opacity="0.9"/>
+
+      <!-- glow ring (uses currentColor) -->
+      <circle cx="100" cy="100" r="86" fill="none" stroke="currentColor" stroke-width="6" opacity="0.55" filter="url(#glow)"/>
+
+      <!-- power glyph -->
+      <!-- Slight upward translation to visually center glyph within the outer ring -->
+      <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)" transform="translate(0,-8)">
+        <path d="M100 48 v52" stroke-width="12"/>
+        <path d="M62 78 a52 52 0 1 0 76 0" stroke-width="12"/>
+      </g>
+    </symbol>
+  </defs>
+
+  <!-- Default render if directly opened -->
+  <use href="#powerButton" xlink:href="#powerButton"/>
+</svg>

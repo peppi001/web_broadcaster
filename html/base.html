@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Web Broadcaster{% if nav_station_label %} ({{ nav_station_label }}){% endif %}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
+{% block extra_head %}{% endblock %}
+</head>
+<body class="{% block body_class %}{% endblock %}" data-station-id="{{ session.get('station_id') or session.get('current_station_id') or session.get('nav_station_id') or (station.id if station is defined and station is mapping and station.get('id') is not none else (station.id if station is defined and station is not mapping else None)) or (station_id if station_id is defined else '') }}" data-station-key="{{ session.get('active_station_db','') }}">
+    {% if not hide_navbar %}
+    <nav class="navbar">
+        {% set stations_defined = stations and stations|length > 0 %}
+        <div class="navbar-brand">
+            <div class="station-switcher" id="station-switcher">
+                <button type="button" class="station-switcher-btn" id="station-switcher-btn" aria-haspopup="true" aria-expanded="false">
+                    Web Broadcaster{% if nav_station_label %} ({{ nav_station_label }}){% endif %}
+                    <span class="station-switcher-caret" aria-hidden="true">▾</span>
+                </button>
+                <div class="station-switcher-menu" id="station-switcher-menu" role="menu" aria-label="Stations">
+                    <a class="station-switcher-item station-switcher-dashboard" role="menuitem" href="{{ url_for('dashboard') }}">Dashboard</a>
+<div class="station-switcher-divider" role="separator"></div>
+{% if stations and stations|length > 0 %}
+                        {% for st in stations %}
+                            <button type="button" class="station-switcher-item" role="menuitem" data-station-id="{{ st.db_filename or st.db or st.id }}">
+                                {{ st.name }}
+                            </button>
+                        {% endfor %}
+                    {% else %}
+                        <div class="station-switcher-empty">No stations</div>
+                    {% endif %}
+</div>
+            </div>
+
+            {% if session.get('user_id') and stations_defined and not is_stations_dashboard %}
+                <button id="audio-engine-toggle"
+                        class="audio-engine-toggle audio-engine-start"
+                        type="button"
+                        title="Start"
+                        aria-label="Start"
+                        data-on-src="{{ url_for('static', filename='icons/rocker_on.webp') }}"
+                        data-off-src="{{ url_for('static', filename='icons/rocker_off.webp') }}">
+                    <svg id="audio-engine-rocker" class="audio-engine-rocker" aria-hidden="true" focusable="false">
+                        <use href="{{ url_for('static', filename='icons/power_button.svg') }}#powerButton" xlink:href="{{ url_for('static', filename='icons/power_button.svg') }}#powerButton"></use>
+                    </svg>
+                </button>
+<span id="audio-engine-uptime" class="audio-engine-uptime" aria-live="polite"></span>
+            {% endif %}
+        </div>
+        <div class="navbar-links">
+            {% if session.get('user_id') %}
+                {% if stations_defined and not is_stations_dashboard %}
+                    <a href="{{ url_for('dashboard') }}">Dashboard</a>
+                    <a href="{{ url_for('broadcaster') }}">Broadcaster</a>
+                {% endif %}
+                {% if is_stations_dashboard %}
+                    <a href="#" id="add-user-link">Add new user</a>
+                {% endif %}
+                <a href="{{ url_for('logout') }}">Logout ({{ session.get('username') }})</a>
+            {% endif %}
+        </div>
+    </nav>
+    {% endif %}
+
+    <main class="container {% block container_class %}{% endblock %}">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            <div class="flash-messages">
+              {% for category, message in messages %}
+                <div class="flash flash-{{ category }}">{{ message }}</div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </main>
+    {% if session.get('user_id') %}
+    <script src="{{ url_for('static', filename='station_nav.js') }}"></script>
+    {% endif %}
+
+    {% if session.get('user_id') and stations_defined and not is_stations_dashboard %}
+
+    <div id="stop-confirm-backdrop" class="modal-backdrop" aria-hidden="true">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="stop-confirm-title">
+            <div class="modal-title" id="stop-confirm-title">Stop Broadcasting</div>
+            <div class="modal-body">Are you sure you want to stop?</div>
+            <div class="modal-actions">
+                <button type="button" id="stop-confirm-yes" class="modal-btn modal-primary">Yes</button>
+                <button type="button" id="stop-confirm-no" class="modal-btn modal-secondary">No</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='audio_engine_nav.js') }}"></script>
+    {% endif %}
+
+    {% if session.get('user_id') and is_stations_dashboard %}
+    <div id="add-user-backdrop" class="modal-backdrop" aria-hidden="true">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="add-user-title">
+            <div class="modal-title" id="add-user-title">Add new user</div>
+            <div class="modal-body">
+                <label class="form-label" for="add-user-username">Username</label>
+                <input type="text" id="add-user-username" class="text-input" autocomplete="off" />
+
+                <!-- Honeypot (should remain empty) -->
+                <input type="text" id="add-user-website" class="text-input" autocomplete="off" tabindex="-1" aria-hidden="true" style="position:absolute; left:-9999px; top:-9999px; height:1px; width:1px; opacity:0;">
+
+                <div style="height:10px"></div>
+
+                <label class="form-label" for="add-user-password">Password</label>
+                <input type="password" id="add-user-password" class="text-input" autocomplete="new-password" />
+
+                <div style="height:10px"></div>
+
+                <label class="form-label" for="add-user-password2">Confirm password</label>
+                <input type="password" id="add-user-password2" class="text-input" autocomplete="new-password" />
+
+                <div class="muted" id="add-user-error" style="display:none;margin-top:10px;color:#c00;"></div>
+            </div>
+            <div class="modal-actions">
+                <button type="button" id="add-user-save" class="modal-btn modal-primary">Add</button>
+                <button type="button" id="add-user-cancel" class="modal-btn modal-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    (function(){
+      "use strict";
+
+      const link = document.getElementById("add-user-link");
+      const backdrop = document.getElementById("add-user-backdrop");
+      const btnSave = document.getElementById("add-user-save");
+      const btnCancel = document.getElementById("add-user-cancel");
+      const inpU = document.getElementById("add-user-username");
+      const inpP1 = document.getElementById("add-user-password");
+      const inpP2 = document.getElementById("add-user-password2");
+      const inpHP = document.getElementById("add-user-website");
+      const err = document.getElementById("add-user-error");
+
+      function showError(msg){
+        if (!err) return;
+        err.textContent = msg || "";
+        err.style.display = msg ? "block" : "none";
+      }
+
+      function openModal(){
+        if (!backdrop) return;
+        showError("");
+        inpU.value = "";
+        inpP1.value = "";
+        inpP2.value = "";
+        if (inpHP) inpHP.value = "";
+        backdrop.style.display = "flex";
+        backdrop.setAttribute("aria-hidden", "false");
+        setTimeout(()=>{ try{ inpU.focus(); }catch(e){} }, 10);
+      }
+
+      function closeModal(){
+        if (!backdrop) return;
+        backdrop.style.display = "none";
+        backdrop.setAttribute("aria-hidden", "true");
+      }
+
+      async function submit(){
+        const username = (inpU.value || "").trim();
+        const password = (inpP1.value || "").trim();
+        const password2 = (inpP2.value || "").trim();
+        const website = inpHP ? (inpHP.value || "").trim() : "";
+
+        if (!username || !password || !password2){
+          showError("Username and both password fields are required.");
+          return;
+        }
+        if (password !== password2){
+          showError("Passwords do not match.");
+          return;
+        }
+
+        btnSave.disabled = true;
+        try{
+          const resp = await fetch("/users/add", {
+            method: "POST",
+            headers: {"Content-Type":"application/json"},
+            body: JSON.stringify({username, password, password2, website})
+          });
+          const data = await resp.json().catch(()=>null);
+          if (!resp.ok || !data || !data.ok){
+            const code = data && data.error;
+            if (code === "username_exists") showError("That username already exists.");
+            else if (code === "password_mismatch") showError("Passwords do not match.");
+            else if (code === "missing_fields") showError("Username and both password fields are required.");
+            else showError("Failed to add user.");
+            return;
+          }
+          closeModal();
+        }catch(e){
+          showError("Failed to add user.");
+        }finally{
+          btnSave.disabled = false;
+        }
+      }
+
+      if (link){
+        link.addEventListener("click", function(ev){
+          ev.preventDefault();
+          openModal();
+        });
+      }
+
+      if (btnCancel) btnCancel.addEventListener("click", closeModal);
+      if (backdrop) backdrop.addEventListener("click", function(ev){
+        if (ev.target === backdrop) closeModal();
+      });
+      if (btnSave) btnSave.addEventListener("click", submit);
+      [inpU, inpP1, inpP2].forEach(function(i){
+        if (!i) return;
+        i.addEventListener("keydown", function(ev){
+          if (ev.key === "Enter") submit();
+          if (ev.key === "Escape") closeModal();
+        });
+      });
+    })();
+    </script>
+    {% endif %}
+
+{% block extra_body %}{% endblock %}
+<div id="autodj-toast" class="toast" style="display:none;">
+  <div class="toast-title">AutoDJ</div>
+  <div id="autodj-toast-msg" class="toast-msg"></div>
+  <button id="autodj-toast-close" class="toast-close" type="button">×</button>
+</div>
+</body>
+</html>

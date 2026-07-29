@@ -1,0 +1,48 @@
+{
+  "layout": "layout-2",
+  "saved_at": "2026-03-20T17:52:07.559163",
+  "panels": {
+    "encoders": {
+      "x": 12,
+      "y": -12,
+      "width": 480,
+      "height": 160
+    },
+    "history": {
+      "x": 12,
+      "y": -12,
+      "width": 576,
+      "height": 420
+    },
+    "pal": {
+      "x": 12,
+      "y": -12,
+      "width": 816,
+      "height": 160
+    },
+    "playlist": {
+      "x": 108,
+      "y": -12,
+      "width": 720,
+      "height": 720
+    },
+    "queue": {
+      "x": 12,
+      "y": -12,
+      "width": 576,
+      "height": 288
+    },
+    "tracks": {
+      "x": 0,
+      "y": 0,
+      "width": null,
+      "height": null
+    },
+    "playlist-splitter": {
+      "x": 0,
+      "y": 0,
+      "width": null,
+      "height": 167
+    }
+  }
+}

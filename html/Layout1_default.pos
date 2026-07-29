@@ -1,0 +1,60 @@
+{
+  "layout": "layout-1",
+  "saved_at": "2026-03-20T16:23:57.295648",
+  "panels": {
+    "clock": {
+      "x": -168,
+      "y": -12,
+      "width": 264,
+      "height": 204
+    },
+    "deck": {
+      "x": 0,
+      "y": -12,
+      "width": 1044,
+      "height": 204
+    },
+    "encoders": {
+      "x": 0,
+      "y": -12,
+      "width": 612,
+      "height": 160
+    },
+    "history": {
+      "x": 0,
+      "y": -12,
+      "width": 612,
+      "height": 204
+    },
+    "pal": {
+      "x": 132,
+      "y": -12,
+      "width": 696,
+      "height": 160
+    },
+    "playlist": {
+      "x": 132,
+      "y": -12,
+      "width": 696,
+      "height": 492
+    },
+    "playlist-splitter": {
+      "x": 0,
+      "y": 0,
+      "width": null,
+      "height": 170
+    },
+    "queue": {
+      "x": 0,
+      "y": -12,
+      "width": 610,
+      "height": 280
+    },
+    "tracks": {
+      "x": 263,
+      "y": -68,
+      "width": 609,
+      "height": 264
+    }
+  }
+}

@@ -1,0 +1,6 @@
+while True:
+    wait_for_time("XX:59:40")
+    path = "/home/xxx/mp3/Ido/{next_hour_2digit}.mp3"
+    queue_add_file((path), top)
+    queue_add_random_file("/home/xxx/mp3/Spot", top)
+    next()
