@@ -1,6 +1,6 @@
-# Web Broadcaster native audio daemon — v6024
+# Web Broadcaster native audio daemon — v6027
 
-The native daemon is the authoritative multi-station audio backend. Version 6024
+The native daemon is the authoritative multi-station audio backend. Version 6027
 is based on the closed v5102 control and application architecture, but replaces
 all FFmpeg command-line child processes in the live audio path with direct
 FFmpeg 7.1.5 library integration.
@@ -43,7 +43,7 @@ is not started by the live station path.
 
 ## Native SoundSolution DSP
 
-Version 6024 links the daemon directly to the architecture-matched SoundSolution runtime through the regular ELF file `libsoundsolution.so.2`. The amd64 build uses final SoundSolution Native v6.1.0 SSE2-direct, while the Raspberry Pi 5 build uses the validated SoundSolution Native v6.0.0 structured-process runtime unchanged. Each
+Version 6027 links the daemon directly to the architecture-matched SoundSolution runtime through the regular ELF file `libsoundsolution.so.2`. The amd64 build uses final SoundSolution Native v6.1.0 SSE2-direct, while the Raspberry Pi 5 build uses the validated SoundSolution Native v6.0.0 structured-process runtime unchanged. Each
 station owns an independent `ssnative_dsp` context,
 loads its persisted `.dat` configuration and processes the mixed 44.1 kHz,
 signed 16-bit little-endian stereo PCM block in place before encoding.

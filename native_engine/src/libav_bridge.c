@@ -52,6 +52,57 @@ static bool suppress_noisy_mp3_header_log(void *avcl, int level, const char *for
         && (strcmp(item_name, "mp3float") == 0 || strcmp(item_name, "mp3") == 0);
 }
 
+static bool valid_id3_frame_name(const char *frame_name) {
+    size_t length;
+    size_t index;
+
+    if (frame_name == NULL) return false;
+    length = strlen(frame_name);
+    if (length != 3U && length != 4U) return false;
+    for (index = 0U; index < length; index++) {
+        const unsigned char value = (unsigned char)frame_name[index];
+        if (!((value >= (unsigned char)'A' && value <= (unsigned char)'Z')
+              || (value >= (unsigned char)'0' && value <= (unsigned char)'9'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool suppress_noisy_id3_metadata_log(
+    void *avcl,
+    int level,
+    const char *format,
+    va_list arguments
+) {
+    (void)avcl;
+
+    /* FFmpeg 7.1.5 reports malformed ID3 text/comment metadata at
+     * AV_LOG_ERROR even though the parser only drops the bad metadata frame.
+     * Match only the exact parser formats. Audio/container failures continue
+     * to the default libav callback unchanged. */
+    if (format == NULL || level > AV_LOG_ERROR) return false;
+
+    if (strcmp(format, "Cannot read BOM value, input too short\n") == 0
+        || strcmp(format, "Incorrect BOM value\n") == 0
+        || strcmp(format, "Error reading comment frame, skipped\n") == 0
+        || strcmp(format, "Error reading lyrics, skipped\n") == 0) {
+        return true;
+    }
+
+    if (strcmp(format, "Error reading frame %s, skipped\n") == 0) {
+        const char *frame_name;
+        va_list copy;
+
+        va_copy(copy, arguments);
+        frame_name = va_arg(copy, const char *);
+        va_end(copy);
+        return valid_id3_frame_name(frame_name);
+    }
+
+    return false;
+}
+
 static void wb_libav_log_callback(
     void *avcl,
     int level,
@@ -59,6 +110,7 @@ static void wb_libav_log_callback(
     va_list arguments
 ) {
     if (suppress_noisy_mp3_header_log(avcl, level, format)) return;
+    if (suppress_noisy_id3_metadata_log(avcl, level, format, arguments)) return;
     av_log_default_callback(avcl, level, format, arguments);
 }
 
