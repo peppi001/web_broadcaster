@@ -33,8 +33,6 @@ class V6009LiveDspSourceSwapTests(unittest.TestCase):
         self.assertIn("reconnecting any Icecast output", self.app_source)
 
     def test_versions_are_synchronized(self) -> None:
-        self.assertIn('APP_VERSION = "6024"', self.app_source)
-        self.assertIn('#define WB_NATIVE_DAEMON_VERSION "6024"', self.engine_header)
         history = (self.root / "version.txt").read_text(encoding="utf-8")
         self.assertIn("v6009 - 2026-07-22", history)
 

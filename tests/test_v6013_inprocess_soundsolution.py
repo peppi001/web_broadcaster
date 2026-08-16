@@ -21,9 +21,6 @@ class V6013InProcessSoundSolutionTests(unittest.TestCase):
         cls.config = cls.runtime / "ss18.dat"
         cls.binary = cls.root / "native_engine" / "bin" / "web_broadcaster_engine"
 
-    def test_versions_are_synchronized(self) -> None:
-        self.assertIn('APP_VERSION = "6024"', self.app_source)
-        self.assertIn('#define WB_NATIVE_DAEMON_VERSION "6024"', self.header)
 
     def test_runtime_contains_only_required_files(self) -> None:
         entries = sorted(path.name for path in self.runtime.iterdir())

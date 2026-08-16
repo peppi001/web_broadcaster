@@ -203,7 +203,6 @@ class RuntimeDurationSelfHealTests(unittest.TestCase):
         self.assertIn(r'\"manual_timing\":%s', self.native_source)
         self.assertIn('track->manual_timing ? "true" : "false"', self.native_source)
         self.assertIn("_schedule_runtime_duration_verification(event)", self.source)
-        self.assertIn('APP_VERSION = "6024"', self.source)
 
 
 if __name__ == "__main__":

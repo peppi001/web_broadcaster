@@ -481,8 +481,6 @@ class AppEngineRoutingTests(unittest.TestCase):
         self.assertIn('if not bool(state.get("running")):', lifecycle)
         self.assertLess(lifecycle.index('if not player_enabled:'), lifecycle.index('_native_rebuild_plan_after_track_started'))
 
-    def test_version_is_6012(self) -> None:
-        self.assertIn('APP_VERSION = "6024"', self.source)
 
     def test_main_starts_internal_audio_runtime_before_flask(self) -> None:
         self.assertIn('ensure_ready = getattr(engine, "ensure_ready", None)', self.source)

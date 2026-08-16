@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import struct
 import subprocess
 import tempfile
@@ -29,6 +30,10 @@ class NativeDaemonAuthoritativeTests(unittest.TestCase):
     def test_native_commands_own_load_select_and_transition(self) -> None:
         root = Path(__file__).resolve().parents[1]
         binary = root / "native_engine" / "bin" / "web_broadcaster_engine"
+        header = (root / "native_engine" / "include" / "engine.h").read_text(encoding="utf-8")
+        match = re.search(r'#define WB_NATIVE_DAEMON_VERSION "([^"]+)"', header)
+        self.assertIsNotNone(match)
+        expected_native_version = match.group(1)
         self.assertTrue(binary.is_file())
         self.assertTrue(os.access(binary, os.X_OK))
 
@@ -41,8 +46,8 @@ class NativeDaemonAuthoritativeTests(unittest.TestCase):
             socket_path = temp / "engine.sock"
             process = subprocess.Popen(
                 [str(binary), str(socket_path)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 text=True,
             )
             native: NativeEngine | None = None
@@ -66,6 +71,19 @@ class NativeDaemonAuthoritativeTests(unittest.TestCase):
                         ),
                     ),
                 )
+                last_ready_error: Exception | None = None
+                while time.monotonic() < deadline:
+                    if process.poll() is not None:
+                        self.fail(f"native daemon exited during startup with code {process.returncode}")
+                    try:
+                        native.ping()
+                        last_ready_error = None
+                        break
+                    except Exception as exc:  # startup readiness only
+                        last_ready_error = exc
+                        time.sleep(0.02)
+                if last_ready_error is not None:
+                    self.fail(f"native daemon did not become protocol-ready: {last_ready_error}")
                 station = "db-Test.db"
                 native.start(station_key=station)
 
@@ -99,7 +117,7 @@ class NativeDaemonAuthoritativeTests(unittest.TestCase):
                 self.assertEqual(second["queue_id"], 2)
                 self.assertFalse(second["transitioning"])
                 self.assertEqual(second["app_version"], "5102")
-                self.assertEqual(second["native_daemon_version"], "6024")
+                self.assertEqual(second["native_daemon_version"], expected_native_version)
                 native.stop(station_key=station)
             finally:
                 if native is not None:
@@ -110,8 +128,6 @@ class NativeDaemonAuthoritativeTests(unittest.TestCase):
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=3.0)
-                if process.stdout is not None:
-                    process.stdout.close()
 
 
 if __name__ == "__main__":

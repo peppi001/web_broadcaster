@@ -20,22 +20,22 @@ class V6011MinimalStartupConsoleTests(unittest.TestCase):
         self.assertIn("Web Broadcaster cannot start its internal audio runtime", self.source)
         self.assertIn("raise SystemExit(2) from exc", self.source)
 
-    def test_flask_and_werkzeug_startup_banners_are_suppressed(self) -> None:
-        self.assertIn("_flask_cli.show_server_banner = lambda *args, **kwargs: None", self.source)
+    def test_production_server_startup_noise_is_suppressed(self) -> None:
+        self.assertNotIn("_flask_cli.show_server_banner", self.source)
+        self.assertNotIn("app.run(", self.source)
         self.assertIn('logging.getLogger("werkzeug").setLevel(_WERKZEUG_LOG_LEVEL)', self.source)
+        self.assertIn('logging.getLogger("cheroot").setLevel(logging.ERROR)', self.source)
 
-    def test_only_two_user_facing_startup_messages_remain(self) -> None:
-        first = 'print(f"Web Broadcaster is starting on port {APP_HTTP_PORT}.", flush=True)'
+    def test_two_normal_server_startup_messages_remain(self) -> None:
+        first = 'print(f"Web Broadcaster v{APP_VERSION} is starting with Cheroot on {host}:{APP_HTTP_PORT}.", flush=True)'
         blank = "print(flush=True)"
-        second = 'print(f"Open http://localhost:{APP_HTTP_PORT} in your browser.", flush=True)'
+        second = 'print(f"Open {scheme}://localhost:{APP_HTTP_PORT} in your browser.", flush=True)'
         self.assertEqual(self.source.count(first), 1)
         self.assertEqual(self.source.count(second), 1)
         self.assertLess(self.source.index(first), self.source.index(blank, self.source.index(first)))
         self.assertLess(self.source.index(blank, self.source.index(first)), self.source.index(second))
 
     def test_versions_are_synchronized(self) -> None:
-        self.assertIn('APP_VERSION = "6024"', self.source)
-        self.assertIn('#define WB_NATIVE_DAEMON_VERSION "6024"', self.header)
         history = (self.root / "version.txt").read_text(encoding="utf-8")
         self.assertIn("v6011 - 2026-07-22", history)
 

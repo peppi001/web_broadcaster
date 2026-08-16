@@ -24,6 +24,30 @@ class BundledFfmpegRuntimeTests(unittest.TestCase):
         cls.ffmpeg = cls.root / "bin" / "ffmpeg"
         cls.lib_dir = cls.root / "lib"
 
+    def _connect_ready_socket(
+        self,
+        socket_path: Path,
+        process: subprocess.Popen[str],
+        *,
+        timeout: float = 5.0,
+    ) -> socket.socket:
+        deadline = time.monotonic() + timeout
+        last_error: OSError | None = None
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                self.fail(f"native daemon exited during startup with code {process.returncode}")
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.settimeout(1.0)
+            try:
+                client.connect(str(socket_path))
+                return client
+            except OSError as exc:
+                last_error = exc
+                client.close()
+                time.sleep(0.02)
+        self.fail(f"native daemon did not accept connections: {last_error}")
+        raise AssertionError("unreachable")
+
     def test_package_contains_ffmpeg_but_not_ffprobe(self) -> None:
         self.assertTrue(self.ffmpeg.is_file())
         self.assertTrue(os.access(self.ffmpeg, os.X_OK))
@@ -139,16 +163,7 @@ class BundledFfmpegRuntimeTests(unittest.TestCase):
             )
             native = None
             try:
-                deadline = time.monotonic() + 5.0
-                while not socket_path.exists() and time.monotonic() < deadline:
-                    if process.poll() is not None:
-                        break
-                    time.sleep(0.01)
-                if not socket_path.exists():
-                    output = process.stdout.read() if process.stdout is not None else ""
-                    self.fail(f"native daemon failed to start: {output}")
-                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as raw_client:
-                    raw_client.connect(str(socket_path))
+                with self._connect_ready_socket(socket_path, process) as raw_client:
                     with raw_client.makefile("r", encoding="utf-8") as raw_file:
                         ready = json.loads(raw_file.readline())
                 payload = dict(ready.get("payload") or {})
@@ -199,16 +214,7 @@ class BundledFfmpegRuntimeTests(unittest.TestCase):
                 env=os.environ.copy(),
             )
             try:
-                deadline = time.monotonic() + 5.0
-                while not socket_path.exists() and time.monotonic() < deadline:
-                    if process.poll() is not None:
-                        break
-                    time.sleep(0.01)
-                if not socket_path.exists():
-                    output = process.stdout.read() if process.stdout is not None else ""
-                    self.fail(f"daemon did not recover inherited SIGCHLD=SIG_IGN: {output}")
-                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as raw_client:
-                    raw_client.connect(str(socket_path))
+                with self._connect_ready_socket(socket_path, process) as raw_client:
                     with raw_client.makefile("r", encoding="utf-8") as raw_file:
                         ready = json.loads(raw_file.readline())
                 payload = dict(ready.get("payload") or {})
@@ -241,16 +247,7 @@ class BundledFfmpegRuntimeTests(unittest.TestCase):
                     env=os.environ.copy(),
                 )
                 try:
-                    deadline = time.monotonic() + 5.0
-                    while not socket_path.exists() and time.monotonic() < deadline:
-                        if process.poll() is not None:
-                            break
-                        time.sleep(0.01)
-                    if not socket_path.exists():
-                        output = process.stdout.read() if process.stdout is not None else ""
-                        self.fail(f"daemon unexpectedly required ffmpeg CLI: {output}")
-                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as raw_client:
-                        raw_client.connect(str(socket_path))
+                    with self._connect_ready_socket(socket_path, process) as raw_client:
                         with raw_client.makefile("r", encoding="utf-8") as raw_file:
                             ready = json.loads(raw_file.readline())
                     payload = dict(ready.get("payload") or {})

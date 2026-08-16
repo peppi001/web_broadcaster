@@ -92,7 +92,11 @@ class DbQueuePlanTests(unittest.TestCase):
             "_ab_get_settings_from_conn": lambda conn: {},
             "normalize_media_path": lambda value: value,
             "_build_seek_restart_descriptor": lambda track, station: "",
-            "read_media_metadata": lambda path: {"year": "1999"},
+            "read_media_metadata": lambda path: {
+                "artist": "Tagged Artist",
+                "title": "Tagged Title",
+                "year": "1999",
+            },
             "_normalize_year_metadata": lambda value: str(value or ""),
             "_ab_native_runtime_timing_metadata": (
                 lambda path, row, station_key, sam_settings, escape:
@@ -107,12 +111,53 @@ class DbQueuePlanTests(unittest.TestCase):
         self.assertIn('queue_id="11"', plan[0])
         self.assertIn('track_id="21"', plan[0])
         self.assertIn('station_key="db-test.db"', plan[0])
-        self.assertIn('title="First"', plan[0])
+        self.assertIn('artist="Tagged Artist"', plan[0])
+        self.assertIn('title="Tagged Title"', plan[0])
+        self.assertNotIn('title="First"', plan[0])
         self.assertIn('year="1999"', plan[0])
         self.assertIn('/music/Artist - First.mp3', plan[0])
         self.assertIn('queue_id="12"', plan[1])
         self.assertIn('/music/Artist - Second.mp3', plan[1])
         self.assertTrue(connection.closed)
+
+
+    def test_queue_plan_uses_filename_fallback_when_media_tags_are_missing(self) -> None:
+        rows = [{
+            "queue_id": 13,
+            "track_id": 23,
+            "clean_transition": 0,
+            "script_clean_transition": 0,
+            "path": "/music/Fallback Artist - Fallback Title.mp3",
+            "filename": "Fallback Artist - Fallback Title.mp3",
+            "cue_in_seconds": None,
+            "cue_out_seconds": None,
+            "cue_duration_seconds": None,
+            "cue_fade_start_seconds": None,
+            "audio_start_seconds": None,
+            "audio_end_seconds": None,
+        }]
+        connection = _FakeConnection(rows)
+        namespace = {
+            "os": os,
+            "re": re,
+            "sqlite3": sqlite3,
+            "get_active_station_key": lambda: "db-test.db",
+            "get_db_for_station": lambda station_key: connection,
+            "_ab_sam_settings_from_row": lambda row: {},
+            "_ab_get_settings_from_conn": lambda conn: {},
+            "normalize_media_path": lambda value: value,
+            "_build_seek_restart_descriptor": lambda track, station: "",
+            "read_media_metadata": lambda path: {"artist": "", "title": "", "year": ""},
+            "_normalize_year_metadata": lambda value: str(value or ""),
+            "_ab_native_runtime_timing_metadata": lambda *args, **kwargs: "",
+            "_ab_build_native_stream_descriptor": lambda *args, **kwargs: "unused",
+        }
+        exec(self._function_source("_build_station_queue_plan"), namespace)
+        plan = namespace["_build_station_queue_plan"]("db-test.db")
+
+        self.assertEqual(len(plan), 1)
+        self.assertIn('artist="Fallback Artist"', plan[0])
+        self.assertIn('title="Fallback Title"', plan[0])
 
     def test_url_queue_row_becomes_native_stream_descriptor(self) -> None:
         rows = [{

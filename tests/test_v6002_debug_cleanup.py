@@ -42,7 +42,10 @@ class V6002DebugCleanupTests(unittest.TestCase):
 
     def test_python_uses_one_production_logging_and_sqlite_model(self) -> None:
         self.assertIn("_LOG_LEVEL = logging.WARNING if _RUNTIME_LOGGING_ENABLED", self.app)
-        self.assertIn("request_handler=_WebBroadcasterRequestHandler", self.app)
+        self.assertNotIn("request_handler=_WebBroadcasterRequestHandler", self.app)
+        self.assertNotIn("app.run(", self.app)
+        self.assertIn("from cheroot.wsgi import Server as CherootServer", self.app)
+        self.assertIn("server = CherootServer((host, port), app, numthreads=16)", self.app)
         self.assertNotIn("_PERSISTENT_SQLITE_REUSE_ENABLED", self.app)
         self.assertIn("_PERSISTENT_SQLITE_CONNECTIONS", self.app)
         self.assertIn("audio_engine_protocol.jsonl", self.app)

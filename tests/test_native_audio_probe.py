@@ -53,15 +53,17 @@ class NativeAudioProbeTests(unittest.TestCase):
             environment["WEB_BROADCASTER_NATIVE_AUDIO_PREBUFFER_MS"] = str(prebuffer_ms)
             process = subprocess.Popen(
                 [str(self.binary), str(socket_path)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 text=True,
                 env=environment,
             )
             native: NativeEngine | None = None
             try:
-                deadline = time.monotonic() + 3.0
+                deadline = time.monotonic() + 5.0
                 while not socket_path.exists() and time.monotonic() < deadline:
+                    if process.poll() is not None:
+                        break
                     time.sleep(0.01)
                 self.assertTrue(socket_path.exists(), "native daemon socket was not created")
                 native = NativeEngine(
@@ -69,6 +71,19 @@ class NativeAudioProbeTests(unittest.TestCase):
                     request_timeout_sec=2.0,
                     reconnect_delay_sec=0.05,
                 )
+                last_ready_error: Exception | None = None
+                while time.monotonic() < deadline:
+                    if process.poll() is not None:
+                        self.fail(f"native daemon exited during startup with code {process.returncode}")
+                    try:
+                        native.ping()
+                        last_ready_error = None
+                        break
+                    except Exception as exc:  # startup readiness only
+                        last_ready_error = exc
+                        time.sleep(0.02)
+                if last_ready_error is not None:
+                    self.fail(f"native daemon did not become protocol-ready: {last_ready_error}")
                 native.start(station_key="probe-test")
                 yield native, root
             finally:
@@ -84,8 +99,6 @@ class NativeAudioProbeTests(unittest.TestCase):
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=3.0)
-                if process.stdout is not None:
-                    process.stdout.close()
 
     def _make_mp3(self, path: Path, *, duration: float, frequency: int = 880) -> None:
         subprocess.run(
@@ -156,6 +169,23 @@ class NativeAudioProbeTests(unittest.TestCase):
                 "payload": dict(payload or {}),
             }
         )
+
+    def _wait_for_state(
+        self,
+        native: NativeEngine,
+        predicate,
+        *,
+        timeout: float = 3.0,
+        interval: float = 0.02,
+        message: str = "native state condition was not reached",
+    ) -> dict:
+        deadline = time.monotonic() + timeout
+        state = native.get_state()
+        while not predicate(state) and time.monotonic() < deadline:
+            time.sleep(interval)
+            state = native.get_state()
+        self.assertTrue(predicate(state), f"{message}: {state}")
+        return state
 
 
     def test_timed_http_stream_prebuffers_and_plays_through_native_ffmpeg(self) -> None:
@@ -275,8 +305,15 @@ class NativeAudioProbeTests(unittest.TestCase):
                     time.sleep(0.025)
                 self.assertTrue(native.get_state().get("native_audio_deck_a_prebuffer_ready"))
                 self.assertTrue(native.select_deck("A").get("accepted"))
-                time.sleep(1.2)
-                state = native.get_state()
+                state = self._wait_for_state(
+                    native,
+                    lambda current: (
+                        bool(current.get("running"))
+                        and int(current.get("native_audio_probe_position_ms") or 0) > 500
+                    ),
+                    timeout=4.0,
+                    message="infinite HTTP stream did not make realtime playback progress",
+                )
                 self.assertTrue(state.get("running"), state)
                 self.assertGreater(int(state.get("native_audio_probe_position_ms") or 0), 500)
                 names = [event.event for event in observed]
@@ -574,15 +611,28 @@ class NativeAudioProbeTests(unittest.TestCase):
                 self.assertEqual(state["native_audio_probe_transition_at_ms"], 500)
                 self.assertEqual(state["native_audio_probe_effective_end_ms"], 1700)
                 self.assertEqual(state["native_audio_probe_source_end_ms"], 2000)
-                # Decoder duration follows the physical source end, not the
-                # transition trigger.  The legacy bug produced about 450 ms.
-                self.assertAlmostEqual(state["native_audio_probe_actual_duration_ms"], 1950, delta=60)
-                self.assertAlmostEqual(state["native_audio_probe_position_ms"], 2000, delta=60)
 
+                # The terminal EOF event is the canonical atomic record for the
+                # physical decoder tail.  A post-terminal generic get_state()
+                # snapshot may already select another candidate slot on slower
+                # builders, which can legitimately expose a zero final-duration
+                # field even though the completed decoder reported the full tail.
                 eof_event = next(event for event in observed if event.event == "native_audio_probe_eof")
                 self.assertEqual(eof_event.payload.get("transition_at_ms"), 500)
                 self.assertEqual(eof_event.payload.get("effective_end_ms"), 1700)
                 self.assertEqual(eof_event.payload.get("source_end_ms"), 2000)
+                # Decoder duration follows the physical source end, not the
+                # transition trigger.  The legacy bug produced about 450 ms.
+                self.assertAlmostEqual(
+                    int(eof_event.payload.get("final_actual_duration_ms") or 0),
+                    1950,
+                    delta=60,
+                )
+                self.assertAlmostEqual(
+                    int(eof_event.payload.get("source_position_ms") or 0),
+                    2000,
+                    delta=60,
+                )
             finally:
                 unsubscribe()
 
@@ -706,7 +756,14 @@ class NativeAudioProbeTests(unittest.TestCase):
                     native, "track_started", source, queue_id=9051, token="seek-token", deck="A", payload=descriptor
                 )
                 self.assertTrue(started.wait(2.0), "initial native voice did not start")
-                time.sleep(0.15)
+                self._wait_for_state(
+                    native,
+                    lambda current: (
+                        current.get("native_audio_probe_slot_token") == "seek-token"
+                        and int(current.get("native_audio_probe_position_ms") or 0) >= 100
+                    ),
+                    message="initial native voice did not make playback progress before seek",
+                )
                 self._sync(
                     native,
                     "transition_started",
@@ -736,9 +793,16 @@ class NativeAudioProbeTests(unittest.TestCase):
                 self.assertTrue(seek_restarting.wait(2.0), "old PCM voice was not retired for seek")
                 self.assertTrue(seek_pending.wait(2.0), "slow seek restart did not enter pending state")
                 self.assertTrue(seek_applied.wait(2.0), "native decoder did not restart at seek target")
-                time.sleep(0.12)
+                state = self._wait_for_state(
+                    native,
+                    lambda current: (
+                        current.get("native_audio_probe_slot_token") == "seek-token"
+                        and bool(current.get("native_audio_probe_running"))
+                        and int(current.get("native_audio_probe_position_ms") or 0) >= 5000
+                    ),
+                    message="seeked native voice did not become active at the requested position",
+                )
 
-                state = native.get_state()
                 self.assertTrue(state["native_audio_probe_running"])
                 self.assertEqual(state["native_audio_probe_deck"], "A")
                 self.assertEqual(state["native_audio_probe_slot_token"], "seek-token")
@@ -949,8 +1013,15 @@ class NativeAudioProbeTests(unittest.TestCase):
                 # The normal handoff ends A after B has started. This must not
                 # terminate the new one-deck probe running for B.
                 self._sync(native, "track_ended", source_a, queue_id=9101, token="probe-a", deck="A")
-                time.sleep(0.15)
-                state = native.get_state()
+                state = self._wait_for_state(
+                    native,
+                    lambda current: (
+                        bool(current.get("native_audio_probe_running"))
+                        and current.get("native_audio_probe_slot_token") == "probe-b"
+                        and int(current.get("native_audio_probe_position_ms") or 0) > 0
+                    ),
+                    message="new active probe did not remain alive after the old track ended",
+                )
                 self.assertTrue(state["native_audio_probe_running"])
                 self.assertEqual(state["native_audio_probe_deck"], "B")
                 self.assertEqual(state["native_audio_probe_queue_id"], 9102)
@@ -1053,14 +1124,22 @@ class NativeAudioProbeTests(unittest.TestCase):
                 self._sync(native, "deck_loaded", source, queue_id=9301, token="stop-token", deck="A")
                 self._sync(native, "track_started", source, queue_id=9301, token="stop-token", deck="A")
                 self.assertTrue(started.wait(2.0), "probe did not start")
-                time.sleep(0.12)
+                self._wait_for_state(
+                    native,
+                    lambda current: (
+                        current.get("native_audio_probe_slot_token") == "stop-token"
+                        and int(current.get("native_audio_probe_played_duration_ms") or 0) >= 20
+                    ),
+                    message="probe did not make measurable playback progress before stop",
+                )
                 self._sync(native, "track_ended", source, queue_id=9301, token="stop-token", deck="A")
 
-                deadline = time.monotonic() + 2.0
-                state = native.get_state()
-                while state["native_audio_probe_status"] == "stopping" and time.monotonic() < deadline:
-                    time.sleep(0.02)
-                    state = native.get_state()
+                state = self._wait_for_state(
+                    native,
+                    lambda current: current.get("native_audio_probe_status") != "stopping",
+                    timeout=2.0,
+                    message="probe did not settle after track_ended",
+                )
                 self.assertEqual(state["native_audio_probe_status"], "stopped")
                 self.assertFalse(state["native_audio_probe_running"])
                 self.assertTrue(state["native_audio_probe_actual_duration_final"])
@@ -1448,7 +1527,15 @@ class NativeAudioProbeTests(unittest.TestCase):
                     native, "deck_loaded", source, queue_id=9811, token="descriptor-token", deck="A",
                     payload={"cue_in_ms": 50, "cue_out_ms": 250},
                 )
-                time.sleep(0.15)
+                self._wait_for_state(
+                    native,
+                    lambda current: (
+                        current.get("native_audio_probe_slot_token") == "descriptor-token"
+                        and int(current.get("native_audio_probe_cue_in_ms") or 0) == 50
+                        and int(current.get("native_audio_probe_cue_out_ms") or 0) == 250
+                    ),
+                    message="initial descriptor was not established before replacement",
+                )
                 self._sync(
                     native, "deck_loaded", source, queue_id=9811, token="descriptor-token", deck="A",
                     payload={"cue_in_ms": 100, "cue_out_ms": 350},
@@ -1705,7 +1792,14 @@ class NativeAudioProbeTests(unittest.TestCase):
                 self.assertTrue(ready_a.wait(3.0))
                 self.assertTrue(ready_b.wait(3.0))
                 self._sync(native, "track_started", source_a, queue_id=9811, token="early-fade-a", deck="A")
-                time.sleep(0.1)
+                self._wait_for_state(
+                    native,
+                    lambda current: (
+                        current.get("native_audio_probe_slot_token") == "early-fade-a"
+                        and int(current.get("native_audio_probe_position_ms") or 0) >= 100
+                    ),
+                    message="outgoing voice did not make playback progress before transition",
+                )
                 now_ms = int(time.monotonic() * 1000)
                 wall_ms = int(time.time() * 1000)
                 self._sync(

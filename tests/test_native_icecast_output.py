@@ -218,9 +218,8 @@ class NativeIcecastOutputTests(unittest.TestCase):
                 )
             process = subprocess.Popen(
                 [str(self.binary), str(socket_path)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 env=environment,
             )
             native: NativeEngine | None = None
@@ -236,6 +235,17 @@ class NativeIcecastOutputTests(unittest.TestCase):
                     protocol_logger=logger,
                     station_key_resolver=(lambda key=str(station_key or "").strip(): key) if str(station_key or "").strip() else None,
                 )
+                last_ping_error: Exception | None = None
+                while time.monotonic() < deadline:
+                    try:
+                        native.ping()
+                        last_ping_error = None
+                        break
+                    except Exception as exc:  # startup readiness only
+                        last_ping_error = exc
+                        time.sleep(0.02)
+                if last_ping_error is not None:
+                    self.fail(f"native daemon did not become protocol-ready: {last_ping_error}")
                 yield native, Path(tmp)
             finally:
                 if native is not None:
@@ -250,8 +260,6 @@ class NativeIcecastOutputTests(unittest.TestCase):
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=3.0)
-                if process.stdout is not None:
-                    process.stdout.close()
 
     def test_configuration_state_is_secret_free_and_protocol_log_is_redacted(self) -> None:
         with tempfile.TemporaryDirectory() as log_tmp:
@@ -2029,14 +2037,50 @@ class NativeIcecastOutputTests(unittest.TestCase):
                 state = native.get_icecast_output_state()
                 while time.monotonic() < deadline:
                     state = native.get_icecast_output_state()
-                    if state.get("connected_output_count") == 1 and len(mp3_mock.data) > 2000:
+                    if (
+                        state.get("connected_output_count") == 1
+                        and bool(state.get("encoder_running"))
+                        and int(state.get("encoder_generation") or 0) > 0
+                        and len(mp3_mock.data) > 12000
+                    ):
                         break
                     time.sleep(0.05)
                 self.assertEqual(state.get("connected_output_count"), 1, state)
-                generation_before = int(state.get("encoder_generation") or 0)
-                restarts_before = int(state.get("pipeline_restart_count") or 0)
-                mp3_state_before = next(item for item in state["outputs"] if item["output_id"] == "mp3")
-                mp3_connects_before = int(mp3_state_before.get("connect_count") or 0)
+                self.assertTrue(state.get("encoder_running"), state)
+
+                # Establish a stable live baseline before testing branch attachment.
+                # The old 2 kB threshold sampled only ~125 ms of 128 kbps audio and
+                # could observe an unrelated startup recovery on slower/full-suite hosts.
+                stable_deadline = time.monotonic() + 2.0
+                stable_since: float | None = None
+                stable_signature: tuple[int, int, int] | None = None
+                while time.monotonic() < stable_deadline:
+                    state = native.get_icecast_output_state()
+                    mp3_state = next(item for item in state["outputs"] if item["output_id"] == "mp3")
+                    signature = (
+                        int(state.get("encoder_generation") or 0),
+                        int(state.get("pipeline_restart_count") or 0),
+                        int(mp3_state.get("connect_count") or 0),
+                    )
+                    if (
+                        state.get("connected_output_count") == 1
+                        and bool(state.get("encoder_running"))
+                        and len(mp3_mock.data) > 12000
+                    ):
+                        if signature != stable_signature:
+                            stable_signature = signature
+                            stable_since = time.monotonic()
+                        elif stable_since is not None and time.monotonic() - stable_since >= 0.35:
+                            break
+                    else:
+                        stable_signature = None
+                        stable_since = None
+                    time.sleep(0.05)
+                self.assertIsNotNone(stable_signature, state)
+                self.assertIsNotNone(stable_since, state)
+                self.assertGreaterEqual(time.monotonic() - stable_since, 0.35, state)
+
+                generation_before, restarts_before, mp3_connects_before = stable_signature
                 mp3_bytes_before = len(mp3_mock.data)
 
                 native.configure_icecast_output(
@@ -2045,6 +2089,10 @@ class NativeIcecastOutputTests(unittest.TestCase):
                     username="source", password="secret", bitrate_kbps=64,
                     stream_name="Live AAC+",
                 )
+                immediate = native.get_icecast_output_state()
+                self.assertEqual(int(immediate.get("encoder_generation") or 0), generation_before, immediate)
+                self.assertEqual(int(immediate.get("pipeline_restart_count") or 0), restarts_before, immediate)
+
                 deadline = time.monotonic() + 8.0
                 while time.monotonic() < deadline:
                     state = native.get_icecast_output_state()

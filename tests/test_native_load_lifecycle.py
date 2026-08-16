@@ -41,6 +41,20 @@ class NativeLoadLifecycleTests(unittest.TestCase):
                 request_timeout_sec=1.0,
                 reconnect_delay_sec=0.05,
             )
+            ready_deadline = time.monotonic() + 3.0
+            last_ready_error: Exception | None = None
+            while time.monotonic() < ready_deadline:
+                if process.poll() is not None:
+                    break
+                try:
+                    native.ping()
+                    last_ready_error = None
+                    break
+                except Exception as exc:
+                    last_ready_error = exc
+                    time.sleep(0.02)
+            if last_ready_error is not None:
+                self.fail(f"native daemon socket exists but is not ready: {last_ready_error}")
             yield native
         finally:
             if native is not None:

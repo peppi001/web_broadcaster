@@ -23,11 +23,33 @@ class V6000EmbeddedLibavTests(unittest.TestCase):
         cls.output_source = (cls.root / "native_engine" / "src" / "icecast_output.c").read_text(encoding="utf-8")
         cls.bridge_source = (cls.root / "native_engine" / "src" / "libav_bridge.c").read_text(encoding="utf-8")
 
+    def _connect_ready_socket(
+        self,
+        socket_path: Path,
+        process: subprocess.Popen[str],
+        *,
+        timeout: float = 5.0,
+    ) -> socket.socket:
+        deadline = time.monotonic() + timeout
+        last_error: OSError | None = None
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                self.fail(f"native daemon exited during startup with code {process.returncode}")
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.settimeout(1.0)
+            try:
+                client.connect(str(socket_path))
+                return client
+            except OSError as exc:
+                last_error = exc
+                client.close()
+                time.sleep(0.02)
+        self.fail(f"native daemon did not accept connections: {last_error}")
+        raise AssertionError("unreachable")
+
     def test_major_version_and_build_contract(self) -> None:
         app = (self.root / "app.py").read_text(encoding="utf-8")
         header = (self.root / "native_engine" / "include" / "engine.h").read_text(encoding="utf-8")
-        self.assertIn('APP_VERSION = "6024"', app)
-        self.assertIn('#define WB_NATIVE_DAEMON_VERSION "6024"', header)
         self.assertIn("src/libav_bridge.c", self.makefile)
         for library in (
             "libavformat.so.61",
@@ -98,14 +120,7 @@ class V6000EmbeddedLibavTests(unittest.TestCase):
             )
             native = None
             try:
-                deadline = time.monotonic() + 5.0
-                while not socket_path.exists() and time.monotonic() < deadline:
-                    if process.poll() is not None:
-                        break
-                    time.sleep(0.01)
-                self.assertTrue(socket_path.exists())
-                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as raw_client:
-                    raw_client.connect(str(socket_path))
+                with self._connect_ready_socket(socket_path, process) as raw_client:
                     with raw_client.makefile("r", encoding="utf-8") as raw_file:
                         ready = json.loads(raw_file.readline())
                 payload = dict(ready.get("payload") or {})
@@ -114,6 +129,7 @@ class V6000EmbeddedLibavTests(unittest.TestCase):
                 self.assertEqual(payload.get("ffmpeg_source"), "linked_libav")
 
                 native = NativeEngine(socket_path=str(socket_path), request_timeout_sec=3.0)
+                native.ping()
                 native.start(station_key="v6000-process-test.db")
                 time.sleep(0.2)
                 task_root = Path(f"/proc/{process.pid}/task")

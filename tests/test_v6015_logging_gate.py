@@ -62,8 +62,9 @@ class V6016LoggingGateTests(unittest.TestCase):
                 engine.close()
 
     def test_debug_does_not_enable_other_debug_modes(self) -> None:
-        self.assertIn("debug=False", self.app_source)
+        self.assertNotIn("app.run(", self.app_source)
         self.assertNotIn("debug=_RUNTIME_LOGGING_ENABLED", self.app_source)
+        self.assertIn("from cheroot.wsgi import Server as CherootServer", self.app_source)
         self.assertIn(
             '"WEB_BROADCASTER_ENGINE_PROTOCOL_VERBOSE",\n        False,',
             self.factory_source,

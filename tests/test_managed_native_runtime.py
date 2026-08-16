@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -18,6 +19,11 @@ class ManagedNativeRuntimeTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.root = Path(__file__).resolve().parents[1]
         cls.binary = cls.root / "native_engine" / "bin" / "web_broadcaster_engine"
+        header = (cls.root / "native_engine" / "include" / "engine.h").read_text(encoding="utf-8")
+        match = re.search(r'#define WB_NATIVE_DAEMON_VERSION "([^"]+)"', header)
+        if match is None:
+            raise unittest.SkipTest("native daemon version macro is unavailable")
+        cls.native_version = match.group(1)
         if not cls.binary.is_file():
             raise unittest.SkipTest("bundled native daemon binary is unavailable")
 
@@ -50,7 +56,7 @@ class ManagedNativeRuntimeTests(unittest.TestCase):
                 self.assertTrue(reply.get("ok"), reply)
                 self.assertEqual(
                     str((reply.get("result") or {}).get("native_daemon_version") or ""),
-                    "6024",
+                    self.native_version,
                 )
                 state = engine.diagnostic_state()
                 daemon_pid = int(state.get("daemon_pid") or 0)
@@ -66,7 +72,7 @@ class ManagedNativeRuntimeTests(unittest.TestCase):
                 f"managed daemon {daemon_pid} survived client shutdown",
             )
             self.assertTrue(self._wait_for(lambda: not socket_path.exists()))
-            self.assertIn("native multi-station daemon v6024", daemon_log.read_text(errors="replace"))
+            self.assertIn(f"native multi-station daemon v{self.native_version}", daemon_log.read_text(errors="replace"))
 
 
     def test_native_pause_state_round_trip(self) -> None:

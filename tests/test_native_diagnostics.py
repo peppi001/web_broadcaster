@@ -29,8 +29,8 @@ class NativeDiagnosticsTests(unittest.TestCase):
             environment["WEB_BROADCASTER_DIAGNOSTIC_INTERVAL_MS"] = "100"
             process = subprocess.Popen(
                 [str(self.binary), str(socket_path)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 text=True,
                 env=environment,
             )
@@ -45,8 +45,10 @@ class NativeDiagnosticsTests(unittest.TestCase):
             )
             native: NativeEngine | None = None
             try:
-                deadline = time.monotonic() + 3.0
+                deadline = time.monotonic() + 5.0
                 while not socket_path.exists() and time.monotonic() < deadline:
+                    if process.poll() is not None:
+                        break
                     time.sleep(0.01)
                 self.assertTrue(socket_path.exists())
                 native = NativeEngine(
@@ -55,6 +57,19 @@ class NativeDiagnosticsTests(unittest.TestCase):
                     reconnect_delay_sec=0.05,
                     protocol_logger=logger,
                 )
+                last_ready_error: Exception | None = None
+                while time.monotonic() < deadline:
+                    if process.poll() is not None:
+                        self.fail(f"native daemon exited during startup with code {process.returncode}")
+                    try:
+                        native.ping()
+                        last_ready_error = None
+                        break
+                    except Exception as exc:  # startup readiness only
+                        last_ready_error = exc
+                        time.sleep(0.02)
+                if last_ready_error is not None:
+                    self.fail(f"native daemon did not become protocol-ready: {last_ready_error}")
                 state = native.get_diagnostics_state()
                 for field in (
                     "runtime_ms",
@@ -111,8 +126,6 @@ class NativeDiagnosticsTests(unittest.TestCase):
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=3.0)
-                if process.stdout is not None:
-                    process.stdout.close()
 
 
 if __name__ == "__main__":

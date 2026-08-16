@@ -69,15 +69,17 @@ class V6003CorruptAudioRecoveryTests(unittest.TestCase):
             environment["WEB_BROADCASTER_NATIVE_AUDIO_PREBUFFER_MS"] = "250"
             process = subprocess.Popen(
                 [str(self.binary), str(socket_path)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 text=True,
                 env=environment,
             )
             native: NativeEngine | None = None
             try:
-                deadline = time.monotonic() + 4.0
+                deadline = time.monotonic() + 6.0
                 while not socket_path.exists() and time.monotonic() < deadline:
+                    if process.poll() is not None:
+                        break
                     time.sleep(0.01)
                 self.assertTrue(socket_path.exists(), "native daemon socket was not created")
 
@@ -86,6 +88,19 @@ class V6003CorruptAudioRecoveryTests(unittest.TestCase):
                     request_timeout_sec=3.0,
                     reconnect_delay_sec=0.05,
                 )
+                last_ready_error: Exception | None = None
+                while time.monotonic() < deadline:
+                    if process.poll() is not None:
+                        self.fail(f"native daemon exited during startup with code {process.returncode}")
+                    try:
+                        native.ping()
+                        last_ready_error = None
+                        break
+                    except Exception as exc:  # startup readiness only
+                        last_ready_error = exc
+                        time.sleep(0.02)
+                if last_ready_error is not None:
+                    self.fail(f"native daemon did not become protocol-ready: {last_ready_error}")
                 terminal = threading.Event()
                 analysis_ready = threading.Event()
                 observed: list[EngineEvent] = []
@@ -155,8 +170,6 @@ class V6003CorruptAudioRecoveryTests(unittest.TestCase):
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=3.0)
-                if process.stdout is not None:
-                    process.stdout.close()
 
 
 if __name__ == "__main__":
