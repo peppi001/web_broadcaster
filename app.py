@@ -1,6 +1,6 @@
 import os
 
-APP_VERSION = "6024"
+APP_VERSION = "6042"
 
 
 def _environment_switch_enabled(name: str) -> bool:
@@ -131,8 +131,39 @@ def _console_line_filter_enabled() -> bool:
     return value not in {'0', 'false', 'no', 'off'}
 
 
+_ID3_CONSOLE_EXACT_MESSAGES = (
+    b'Cannot read BOM value, input too short',
+    b'Incorrect BOM value',
+    b'Error reading comment frame, skipped',
+    b'Error reading lyrics, skipped',
+)
+
+
+def _is_id3_frame_name_bytes(value: bytes) -> bool:
+    return len(value) in (3, 4) and all(
+        48 <= byte <= 57 or 65 <= byte <= 90
+        for byte in value
+    )
+
+
 def _console_should_suppress_record(record: bytes) -> bool:
-    return any(fragment in record for fragment in _CONSOLE_SUPPRESSED_LINE_FRAGMENTS)
+    if any(fragment in record for fragment in _CONSOLE_SUPPRESSED_LINE_FRAGMENTS):
+        return True
+
+    # FFmpeg 7.1.5 reports malformed ID3 text/comment/lyrics metadata at
+    # AV_LOG_ERROR even though it only skips that metadata frame. Match only
+    # those exact metadata diagnostics so unrelated libav failures remain visible.
+    message = record.rstrip(b'\r\n')
+    if any(message.endswith(exact) for exact in _ID3_CONSOLE_EXACT_MESSAGES):
+        return True
+
+    marker = b'Error reading frame '
+    index = message.rfind(marker)
+    if index >= 0 and message.endswith(b', skipped'):
+        frame_name = message[index + len(marker):-len(b', skipped')]
+        return _is_id3_frame_name_bytes(frame_name)
+
+    return False
 
 
 def _console_write_all(fd: int, data: bytes) -> None:
@@ -415,6 +446,7 @@ import os
 import re
 import json
 import signal
+import secrets
 import sys
 
 
@@ -498,60 +530,21 @@ import copy
 from collections.abc import MutableMapping
 import time
 import logging
-import errno
 import math
 from typing import Any, Mapping, Optional
 from pathlib import Path
 from functools import wraps
 from datetime import datetime, timedelta, timezone
-from flask import Flask, render_template, request, redirect, url_for, session, jsonify, flash, Response
+from flask import Flask, render_template, request, redirect, url_for, session, jsonify, flash, Response, abort
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.serving import WSGIRequestHandler
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 
 def _utc_now_naive() -> datetime:
     """Return current UTC while preserving the existing naive database format."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
-
-
-# These socket errors mean that the HTTP client disappeared while Werkzeug was
-# writing or flushing a response. They are normal client disconnects, not Web
-# Broadcaster failures, so keep them out of the production console while still
-# allowing every unrelated server exception to be reported.
-_IGNORABLE_CLIENT_SOCKET_ERRNOS = frozenset({
-    errno.EPIPE,
-    errno.ECONNRESET,
-    errno.ECONNABORTED,
-    errno.ETIMEDOUT,
-    errno.EHOSTUNREACH,
-    errno.ENETUNREACH,
-})
-
-
-def _is_ignorable_client_socket_error(exc: BaseException) -> bool:
-    return isinstance(exc, OSError) and exc.errno in _IGNORABLE_CLIENT_SOCKET_ERRNOS
-
-
-class _WebBroadcasterRequestHandler(WSGIRequestHandler):
-    """Treat a vanished HTTP client as a normal disconnected request."""
-
-    def handle(self) -> None:
-        try:
-            super().handle()
-        except OSError as exc:
-            if _is_ignorable_client_socket_error(exc):
-                return
-            raise
-
-    def finish(self) -> None:
-        try:
-            super().finish()
-        except OSError as exc:
-            if _is_ignorable_client_socket_error(exc):
-                return
-            raise
 
 
 class NoActiveStationError(Exception):
@@ -750,11 +743,12 @@ def _set_cached_media_metadata(path: str, metadata: dict) -> None:
 
 
 def read_media_metadata(path_or_name: str) -> dict:
-    """Best-effort media tag read for UI metadata fallback.
+    """Best-effort local media metadata read.
 
-    Returns title/artist/album/year when available. Falls back to filename parsing
-    for title/artist if tags are missing. This is UI-only and does not affect the
-    outgoing stream metadata format.
+    Returns title/artist/album/year when available. Embedded tags have priority;
+    filename parsing is used only when title or artist tags are missing. The same
+    canonical values are used by queue descriptors, UI status and outgoing stream
+    metadata.
     """
     out = {"title": "", "artist": "", "album": "", "year": ""}
     try:
@@ -1251,9 +1245,179 @@ app = Flask(
     static_folder=os.path.join(BASE_DIR, "html", "static"),
 )
 
+_SECURITY_SECRET_FILE = Path(DB_DIR) / ".session_secret"
+_SETUP_TOKEN_FILE = Path(DB_DIR) / ".setup_token"
+_SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_PUBLIC_ENDPOINTS = frozenset({"login", "setup", "static"})
+
+
+def _atomic_private_text_file(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(value)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+    except Exception:
+        try:
+            os.unlink(path)
+        except Exception:
+            pass
+        raise
+
+
+def _load_or_create_session_secret() -> str:
+    configured = str(os.environ.get("RADIO_AUTOMATION_SECRET_KEY") or "").strip()
+    if configured:
+        if len(configured) < 32:
+            raise RuntimeError("RADIO_AUTOMATION_SECRET_KEY must contain at least 32 characters.")
+        return configured
+
+    try:
+        existing = _SECURITY_SECRET_FILE.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        existing = ""
+    if existing:
+        if len(existing) < 32:
+            raise RuntimeError(f"Stored session secret is invalid: {_SECURITY_SECRET_FILE}")
+        try:
+            os.chmod(_SECURITY_SECRET_FILE, 0o600)
+        except Exception:
+            pass
+        return existing
+
+    generated = secrets.token_urlsafe(48)
+    try:
+        _atomic_private_text_file(_SECURITY_SECRET_FILE, generated)
+    except FileExistsError:
+        generated = _SECURITY_SECRET_FILE.read_text(encoding="utf-8").strip()
+    return generated
+
+
+def _load_or_create_setup_token() -> str:
+    try:
+        token = _SETUP_TOKEN_FILE.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        token = ""
+    if token:
+        try:
+            os.chmod(_SETUP_TOKEN_FILE, 0o600)
+        except Exception:
+            pass
+        return token
+    token = secrets.token_urlsafe(32)
+    try:
+        _atomic_private_text_file(_SETUP_TOKEN_FILE, token)
+    except FileExistsError:
+        token = _SETUP_TOKEN_FILE.read_text(encoding="utf-8").strip()
+    return token
+
+
+def _consume_setup_token() -> None:
+    try:
+        _SETUP_TOKEN_FILE.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _csrf_token() -> str:
+    token = str(session.get("_csrf_token") or "")
+    if len(token) < 32:
+        token = secrets.token_urlsafe(32)
+        session["_csrf_token"] = token
+    return token
+
+
+def _rotate_csrf_token() -> str:
+    token = secrets.token_urlsafe(32)
+    session["_csrf_token"] = token
+    return token
+
+
+def _parse_trusted_hosts(value: str | None) -> list[str] | None:
+    hosts = [item.strip() for item in str(value or "").split(",") if item.strip()]
+    return hosts or None
+
+
+def _configure_web_security() -> None:
+    secure_cookie = str(os.environ.get("WEB_BROADCASTER_SECURE_COOKIES") or "0").strip().lower() in {"1", "true", "yes", "on"}
+    app.secret_key = _load_or_create_session_secret()
+    app.config.update(
+        SESSION_COOKIE_NAME="wb_session",
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SECURE=secure_cookie,
+        SESSION_COOKIE_SAMESITE="Lax",
+        PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
+        SESSION_REFRESH_EACH_REQUEST=True,
+        MAX_CONTENT_LENGTH=4 * 1024 * 1024,
+        MAX_FORM_MEMORY_SIZE=256 * 1024,
+        MAX_FORM_PARTS=100,
+        TRUSTED_HOSTS=_parse_trusted_hosts(os.environ.get("WEB_BROADCASTER_TRUSTED_HOSTS")),
+        PREFERRED_URL_SCHEME="https" if secure_cookie else "http",
+    )
+
+
+_configure_web_security()
+
+
 @app.context_processor
 def inject_app_version():
-    return {"app_version": APP_VERSION}
+    return {"app_version": APP_VERSION, "csrf_token": _csrf_token()}
+
+
+def _is_api_request() -> bool:
+    return request.path.startswith(("/api/", "/audio-engine/", "/stations/")) or request.is_json
+
+
+@app.before_request
+def _internet_security_gate():
+    # Flask 3.1 performs TRUSTED_HOSTS validation during routing, but still
+    # executes before_request callbacks when routing failed. Preserve that
+    # routing result before authentication tries to build a redirect URL.
+    # This keeps invalid Host requests at HTTP 400 and unknown routes at 404
+    # instead of turning them into url_for() failures or login redirects.
+    routing_error = getattr(request, "routing_exception", None)
+    if routing_error is not None:
+        raise routing_error
+
+    endpoint = request.endpoint or ""
+
+    # Deny-by-default authentication. Only login/setup/static are intentionally public.
+    if endpoint not in _PUBLIC_ENDPOINTS and not session.get("user_id"):
+        if _is_api_request():
+            return jsonify({"success": False, "error": "unauthorized"}), 401
+        return redirect(url_for("login"))
+
+    if request.method.upper() not in _SAFE_HTTP_METHODS:
+        supplied = str(request.headers.get("X-CSRF-Token") or request.form.get("_csrf_token") or "")
+        expected = str(session.get("_csrf_token") or "")
+        if not supplied or not expected or not secrets.compare_digest(supplied, expected):
+            if _is_api_request():
+                return jsonify({"success": False, "error": "csrf_failed"}), 403
+            abort(403)
+
+
+@app.after_request
+def _security_response_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; "
+        "form-action 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline'; connect-src 'self'",
+    )
+    if request.is_secure:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+    if request.endpoint != "static":
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
 
 
 @app.before_request
@@ -1280,7 +1444,10 @@ def _ensure_station_in_session():
 limiter = Limiter(
     key_func=get_remote_address,
     app=app,
-    default_limits=[],
+    default_limits=["600 per minute"],
+    storage_uri="memory://",
+    meta_limits=["20 per hour"],
+    headers_enabled=True,
 )
 
 
@@ -1601,6 +1768,7 @@ def delete_station(station_id: str):
         return jsonify({"success": False, "error": "exception", "detail": str(e)}), 500
 
 @app.route("/api/dashboard_overview", methods=["GET"])
+@login_required
 def api_dashboard_overview():
     """Return native status, uptime and now-playing data for every station."""
     try:
@@ -2381,7 +2549,6 @@ def inject_current_settings():
 
 
 
-app.secret_key = os.environ.get("RADIO_AUTOMATION_SECRET_KEY", "change_this_secret_key")
 
 _DB_CONNECT_TIMEOUT_SECONDS = 30.0
 _DB_BUSY_TIMEOUT_MS = 30000
@@ -4954,17 +5121,24 @@ def api_studio_layout_template_load():
 
 
 @app.route("/setup", methods=["GET", "POST"])
-@limiter.limit("3 per 5 minutes", methods=["POST"])
+@limiter.limit("3 per 5 minutes; 10 per hour", methods=["POST"])
 def setup():
     init_global_db()
 
     if not is_first_run():
         return redirect(url_for("broadcaster"))
 
+    setup_token = _load_or_create_setup_token()
+
     if request.method == "POST":
         if _honeypot_triggered(request.form):
             # Pretend it just failed normally.
             flash("Username and both password fields are required.", "error")
+            return render_template("setup.html", hide_navbar=True)
+
+        supplied_setup_token = str(request.form.get("setup_token") or "").strip()
+        if not supplied_setup_token or not secrets.compare_digest(supplied_setup_token, setup_token):
+            flash("Invalid initial setup token.", "error")
             return render_template("setup.html", hide_navbar=True)
 
         username = request.form.get("username", "").strip()
@@ -4973,6 +5147,9 @@ def setup():
 
         if not username or not password or not password2:
             flash("Username and both password fields are required.", "error")
+            return render_template("setup.html", hide_navbar=True)
+        if len(username) > 64 or len(password) < 12 or len(password) > 256:
+            flash("Username must be at most 64 characters and password must be 12-256 characters.", "error")
             return render_template("setup.html", hide_navbar=True)
 
         if password != password2:
@@ -4996,15 +5173,19 @@ def setup():
         conn.commit()
         conn.close()
 
+        session.clear()
         session["user_id"] = new_user_id
         session["username"] = username
+        session.permanent = True
+        _rotate_csrf_token()
+        _consume_setup_token()
         return redirect(url_for("dashboard"))
 
     return render_template("setup.html", hide_navbar=True)
 
 
 @app.route("/login", methods=["GET", "POST"])
-@limiter.limit("5 per 5 minutes", methods=["POST"])
+@limiter.limit("5 per 5 minutes; 20 per hour", methods=["POST"])
 def login():
     init_global_db()
 
@@ -5018,6 +5199,9 @@ def login():
 
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "").strip()
+        if len(username) > 64 or len(password) > 256:
+            flash("Invalid username or password.", "error")
+            return render_template("login.html", hide_navbar=True)
 
         conn = get_global_db()
         c = conn.cursor()
@@ -5026,8 +5210,11 @@ def login():
         conn.close()
 
         if user and check_password_hash(user["password_hash"], password):
+            session.clear()
             session["user_id"] = user["id"]
             session["username"] = user["username"]
+            session.permanent = True
+            _rotate_csrf_token()
             return redirect(url_for("dashboard"))
         else:
             flash("Invalid username or password.", "error")
@@ -5035,7 +5222,8 @@ def login():
     return render_template("login.html", hide_navbar=True)
 
 
-@app.route("/logout")
+@app.route("/logout", methods=["POST"])
+@login_required
 def logout():
     session.clear()
     return redirect(url_for("login"))
@@ -5062,6 +5250,8 @@ def add_user():
 
     if not username or not password or not password2:
         return jsonify({"ok": False, "error": "missing_fields"}), 400
+    if len(username) > 64 or len(password) < 12 or len(password) > 256:
+        return jsonify({"ok": False, "error": "password_policy"}), 400
     if password != password2:
         return jsonify({"ok": False, "error": "password_mismatch"}), 400
 
@@ -5167,6 +5357,8 @@ def api_users_change_password():
         return jsonify({"ok": False, "error": "missing_user_id"}), 400
     if not current_password or not password or not password2:
         return jsonify({"ok": False, "error": "missing_fields"}), 400
+    if len(current_password) > 256 or len(password) < 12 or len(password) > 256:
+        return jsonify({"ok": False, "error": "password_policy"}), 400
     if password != password2:
         return jsonify({"ok": False, "error": "password_mismatch"}), 400
 
@@ -5198,6 +5390,7 @@ def api_users_change_password():
 
 
 @app.route("/stations/select", methods=["POST"])
+@login_required
 def select_station():
     """Select a station (DB file) for this session."""
     try:
@@ -6863,6 +7056,7 @@ def _start_encoder_if_autostart_on_air(
 
 
 @app.route("/api/encoders", methods=["GET"])
+@login_required
 def api_encoders():
     """Return Encoders-window rows with authoritative native runtime status."""
     try:
@@ -6969,6 +7163,7 @@ def api_encoders():
 
 
 @app.route("/api/encoders/<int:stream_id>", methods=["GET"])
+@login_required
 def api_encoder_get(stream_id: int):
     if not session.get("user_id"):
         return jsonify({"success": False, "error": "unauthorized"}), 401
@@ -6989,6 +7184,7 @@ def api_encoder_get(stream_id: int):
 
 
 @app.route("/api/encoders/create", methods=["POST"])
+@login_required
 def api_encoder_create():
     if not session.get("user_id"):
         return jsonify({"success": False, "error": "unauthorized"}), 401
@@ -7067,6 +7263,7 @@ def api_encoder_create():
 
 
 @app.route("/api/encoders/<int:stream_id>/configure", methods=["POST"])
+@login_required
 def api_encoder_configure(stream_id: int):
     if not session.get("user_id"):
         return jsonify({"success": False, "error": "unauthorized"}), 401
@@ -7155,6 +7352,7 @@ def api_encoder_configure(stream_id: int):
 
 
 @app.route("/api/encoders/<int:stream_id>", methods=["DELETE"])
+@login_required
 def api_encoder_delete(stream_id: int):
     if not session.get("user_id"):
         return jsonify({"success": False, "error": "unauthorized"}), 401
@@ -7198,6 +7396,7 @@ def api_encoder_delete(stream_id: int):
 
 
 @app.route("/api/encoders/<int:stream_id>/start", methods=["POST"])
+@login_required
 def api_encoder_start(stream_id: int):
     """Start an encoder output and return immediately (frontend will poll for status)."""
     if not session.get("user_id"):
@@ -7212,6 +7411,7 @@ def api_encoder_start(stream_id: int):
 
 
 @app.route("/api/encoders/<int:stream_id>/stop", methods=["POST"])
+@login_required
 def api_encoder_stop(stream_id: int):
     """Stop an encoder output and return immediately (frontend will poll for status)."""
     if not session.get("user_id"):
@@ -9472,6 +9672,7 @@ def api_seek():
 
 
 @app.route("/api/audio-engine/status", methods=["GET"], endpoint="api_audio_engine_status")
+@login_required
 def api_audio_engine_status():
     return jsonify(get_audio_engine_status())
 
@@ -9903,6 +10104,12 @@ def _build_station_queue_plan(
             artist, title = [part.strip() for part in logical.split(" - ", 1)]
 
         metadata = read_media_metadata(media_path)
+        # Embedded media tags are authoritative for normal local tracks.
+        # read_media_metadata() already falls back to filename parsing when
+        # artist/title tags are absent, so the legacy filename behavior remains
+        # intact for untagged media while tagged tracks keep their real metadata.
+        artist = str(metadata.get("artist") or artist).strip()
+        title = str(metadata.get("title") or title).strip()
         year = _normalize_year_metadata(metadata.get("year"))
         cue_part = _ab_native_runtime_timing_metadata(
             media_path,
@@ -16030,14 +16237,41 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Web Broadcaster")
-    parser.add_argument("-p", "--port", type=int, default=15000, help="HTTP port for Web Broadcaster")
+    parser.add_argument("-p", "--port", type=int, default=15000, help="TCP port for Web Broadcaster")
+    parser.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"), help="Bind address")
+    parser.add_argument("--https", action="store_true", help="Serve HTTPS directly with the production WSGI server")
+    parser.add_argument("--cert-file", default=os.environ.get("WEB_BROADCASTER_TLS_CERT", ""), help="PEM TLS certificate/full chain")
+    parser.add_argument("--key-file", default=os.environ.get("WEB_BROADCASTER_TLS_KEY", ""), help="PEM TLS private key")
+    parser.add_argument("--trusted-hosts", default=os.environ.get("WEB_BROADCASTER_TRUSTED_HOSTS", ""), help="Comma-separated allowed Host values")
+    parser.add_argument("--proxy-count", type=int, default=int(os.environ.get("WEB_BROADCASTER_PROXY_COUNT", "0") or 0), help="Number of trusted reverse proxies")
+    parser.add_argument("--public-internet", action="store_true", help="Require HTTPS or an explicit trusted reverse proxy before serving")
     args = parser.parse_args()
 
     APP_HTTP_PORT = int(args.port)
+    host = str(args.host or "0.0.0.0")
+    port = APP_HTTP_PORT
     os.environ["PORT"] = str(APP_HTTP_PORT)
-    # Simple development entrypoint. In production use a WSGI server.
-    host = os.environ.get("HOST", "0.0.0.0")
-    port = int(os.environ.get("PORT", "15000"))
+    app.config["TRUSTED_HOSTS"] = _parse_trusted_hosts(args.trusted_hosts)
+    app.config["SESSION_COOKIE_SECURE"] = bool(args.https or args.proxy_count > 0)
+    app.config["PREFERRED_URL_SCHEME"] = "https" if app.config["SESSION_COOKIE_SECURE"] else "http"
+    if args.proxy_count < 0 or args.proxy_count > 4:
+        raise SystemExit("--proxy-count must be between 0 and 4")
+    if (args.https or args.proxy_count > 0) and not app.config.get("TRUSTED_HOSTS"):
+        raise SystemExit("HTTPS/public proxy mode requires at least one --trusted-hosts value")
+    if args.public_internet:
+        if not app.config.get("TRUSTED_HOSTS"):
+            raise SystemExit("--public-internet requires at least one --trusted-hosts value")
+        if not args.https and args.proxy_count == 0:
+            raise SystemExit("--public-internet refuses plain HTTP; enable --https or configure --proxy-count")
+    if args.proxy_count:
+        if host not in {"127.0.0.1", "::1", "localhost"}:
+            raise SystemExit("Reverse-proxy mode requires a loopback --host value")
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=args.proxy_count, x_proto=args.proxy_count, x_host=args.proxy_count)
+    if args.https:
+        if not args.cert_file or not args.key_file:
+            raise SystemExit("HTTPS mode requires --cert-file and --key-file")
+        if not os.path.isfile(args.cert_file) or not os.path.isfile(args.key_file):
+            raise SystemExit("HTTPS certificate or private key file does not exist")
     try:
         engine = get_audio_engine()
         ensure_ready = getattr(engine, "ensure_ready", None)
@@ -16050,25 +16284,43 @@ if __name__ == "__main__":
             flush=True,
         )
         raise SystemExit(2) from exc
-    # Keep normal startup output intentionally minimal. Flask's banner and
-    # Werkzeug informational/warning startup lines are redundant here.
-    # Werkzeug INFO/WARNING startup noise stays suppressed, while real HTTP
-    # server errors remain visible in both normal and DEBUG modes.
     try:
-        from flask import cli as _flask_cli
+        if is_first_run():
+            first_run_token = _load_or_create_setup_token()
+            print("Initial setup is protected by a one-time setup token.", flush=True)
+            print(f"Setup token: {first_run_token}", flush=True)
+            print(f"The token is also stored in: {_SETUP_TOKEN_FILE}", flush=True)
+            print(flush=True)
+    except Exception as exc:
+        print(f"Could not initialize first-run setup token: {exc}", file=sys.stderr, flush=True)
+        raise SystemExit(2) from exc
 
-        _flask_cli.show_server_banner = lambda *args, **kwargs: None
-    except Exception:
-        pass
-    logging.getLogger("werkzeug").setLevel(_WERKZEUG_LOG_LEVEL)
+    from cheroot.wsgi import Server as CherootServer
+    from cheroot.ssl.builtin import BuiltinSSLAdapter
 
-    print(f"Web Broadcaster is starting on port {APP_HTTP_PORT}.", flush=True)
+    logging.getLogger("cheroot").setLevel(logging.ERROR)
+    server = CherootServer((host, port), app, numthreads=16)
+    server.max_request_body_size = 4 * 1024 * 1024
+    server.max_request_header_size = 64 * 1024
+    if args.https:
+        import ssl
+
+        tls_adapter = BuiltinSSLAdapter(args.cert_file, args.key_file)
+        if hasattr(ssl, "TLSVersion"):
+            tls_adapter.context.minimum_version = ssl.TLSVersion.TLSv1_2
+        server.ssl_adapter = tls_adapter
+
+    scheme = "https" if args.https else "http"
+    print(f"Web Broadcaster v{APP_VERSION} is starting with Cheroot on {host}:{APP_HTTP_PORT}.", flush=True)
     print(flush=True)
-    print(f"Open http://localhost:{APP_HTTP_PORT} in your browser.", flush=True)
-    app.run(
-        host="0.0.0.0",
-        port=APP_HTTP_PORT,
-        debug=False,
-        request_handler=_WebBroadcasterRequestHandler,
-    )
+    print(f"Open {scheme}://localhost:{APP_HTTP_PORT} in your browser.", flush=True)
+    try:
+        server.start()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try:
+            server.stop()
+        except Exception:
+            pass
 

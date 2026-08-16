@@ -4947,3 +4947,157 @@ v6024 - 2026-07-28
 - Corrected the v6024 source regression paths for the external FFmpeg staging layout: the diagnostic executable is `bin/ffmpeg`, while the private shared libraries are under `lib/`.
 - Made the one-deck native audio probe regression deterministic on loaded Debian 12 builders by ignoring preload-generation EOF events until the exact active `native_audio_probe_started` event has been observed.
 - Updated APP_VERSION and native daemon version to 6024.
+
+v6025 - 2026-08-11
+-------------------
+- Smoothed the Studio deck progress display without changing the native audio path or the `/api/status` backend contract.
+- Replaced the incremental one-second browser counter with a monotonic `performance.now()` playback anchor, so JavaScript timer jitter is no longer accumulated into the displayed track position.
+- Increased only the local progress UI refresh rate to 100 ms while keeping the authoritative native status poll at 2000 ms; no additional backend, SQLite or native-engine load is introduced.
+- Added bounded forward-only soft correction for normal status-poll drift and retained hard synchronization for real discontinuities such as track changes, seeks or large position jumps.
+- Prevented normal sub-threshold status jitter from stepping the visible track clock backwards while preserving pause, resume, stop and seek behavior.
+- Added regression coverage for the monotonic progress anchor, 100 ms local UI tick and unchanged 2000 ms backend status polling.
+- Updated APP_VERSION and native daemon version to 6025.
+
+v6026 - 2026-08-11
+-------------------
+- Replaced the two Studio Configure button glyphs with the selected CSS-only crossed hammer and screwdriver artwork.
+- Applied the same 15x15 px icon to both Encoder Configuration and Script Configuration while preserving the existing 22x22 px toolbar button geometry and behavior.
+- Kept the selected driver-flipped geometry with the refined smaller screwdriver tip and longer handle; no SVG, icon font or external image asset is used.
+- Removed the previous pseudo-element configure glyph implementation without changing encoder, script, scheduler or native-audio behavior.
+- Updated APP_VERSION and native daemon version to 6026.
+
+v6027 - 2026-08-11
+-------------------
+- Removed all six obsolete SVG icon assets from the consolidated web asset tree: add.svg, power_button.svg, refresh.svg, remove.svg, search.svg and select-all.svg.
+- Removed the now-empty html/static/icons directory; the current Studio Configure icons remain CSS-only and unchanged from v6026.
+- Removed the dead legacy navbar audio-engine rocker markup that contained the only remaining power_button.svg reference and was never rendered because all application templates use hide_navbar=True.
+- Added regression coverage that rejects SVG web assets, the retired icons directory and any remaining .svg or icons/ references in the HTML/CSS/JavaScript web source.
+- Updated APP_VERSION and native daemon version to 6027.
+
+v6028 - 2026-08-13
+-------------------
+- Hardened the Flask web interface for public Internet exposure while leaving the native audio path, FFmpeg integration, SoundSolution DSP, queue, scheduler and Studio behavior unchanged.
+- Removed the hardcoded Flask session-secret fallback; Web Broadcaster now generates and persists a private random session secret in db/.session_secret with mode 0600 unless RADIO_AUTOMATION_SECRET_KEY is supplied explicitly.
+- Added deny-by-default authentication for every application route except login, first-run setup and static assets; /stations/select, /api/audio-engine/status, dashboard overview and all encoder APIs now also have explicit login_required protection.
+- Added session-bound CSRF tokens to every unsafe HTTP method, same-origin automatic X-CSRF-Token injection for Studio fetch requests, protected login/setup/logout forms, and changed logout from GET to POST.
+- Protected first-run provisioning with a random one-time setup token stored in db/.setup_token and printed only to the local server console; the token is deleted after the first administrator is created.
+- Added secure session-cookie policy, eight-hour permanent sessions, request/body/form limits, trusted Host validation support, HSTS on HTTPS responses, CSP, clickjacking, MIME-sniffing, referrer, permissions, opener/resource isolation and no-store response headers.
+- Added stronger password input bounds and a 12-character minimum for newly created or changed passwords while retaining compatibility with existing stored hashes.
+- Replaced the Flask/Werkzeug development server with the production Cheroot WSGI server and added direct TLS support using a PEM certificate/full-chain and private key with TLS 1.2 as the minimum protocol; optional trusted reverse-proxy handling is explicit and disabled by default.
+- Added an explicit public-Internet launch mode that refuses plain HTTP at the application level and a generous global request-rate ceiling in addition to the tighter login/setup limits.
+- Updated the pinned web stack to Flask 3.1.3, Werkzeug 3.1.8, Flask-Limiter 4.1.1 and Cheroot 11.1.2.
+- Added Internet-security regression coverage and updated APP_VERSION and native daemon version to 6028.
+
+
+v6029 - 2026-08-13
+-------------------
+- Added a detailed nginx reverse-proxy deployment guide for the preferred public Internet architecture with nginx on the same host, a user-owned public domain, Certbot and Let’s Encrypt HTTPS.
+- Added a ready-to-copy nginx configuration example with exact forwarded headers, a 4 MiB edge request limit, loopback-only backend routing and explicit no-buffer long-timeout handling for both Web Broadcaster Server-Sent Events endpoints.
+- Documented DNS, IPv4/IPv6 checks, router/firewall ports, first certificate issuance, Certbot renewal/deploy-hook validation, first-run setup-token handling, loopback listener verification, upgrade rules and troubleshooting.
+- Kept the complete v6028 Internet-security hardening and all audio, DSP, encoder, queue, scheduler, Studio UI and runtime behavior unchanged.
+- Updated APP_VERSION and native daemon version to 6029.
+
+v6030 - 2026-08-13
+-------------------
+- Added a deployment-mode guide that explicitly documents trusted LAN-only operation on Debian/Raspberry Pi without nginx, a domain name, Certbot or TLS, including exact start.sh settings, LAN listener verification, router/firewall rules and the plain-HTTP trust boundary.
+- Documented the difference between LAN-only and public nginx modes, safe switching procedures in both directions, shared first-run/session-secret behavior and upgrade rules.
+- Kept the detailed nginx + own-domain + Certbot/Let’s Encrypt public HTTPS guide and ready-to-copy nginx configuration as the preferred Internet deployment path.
+- Kept all v6029 application, Internet-security, audio, DSP, encoder, queue, scheduler and Studio UI runtime behavior unchanged.
+- Updated APP_VERSION and native daemon version to 6030.
+
+v6031 - 2026-08-13
+- Fixed the buildkit full regression suite so all current-version assertions follow APP_VERSION/native daemon version 6031 instead of stale 6027 literals.
+- Regression fixture generation continues to use the normal host ffmpeg/ffprobe when available; the bundled runtime remains the intentionally minimal production runtime and is not repurposed as a test-fixture generator.
+- Updated stale Flask/Werkzeug development-server regression checks for the production Cheroot architecture and removed the now-unused Werkzeug request-handler shim.
+- Hardened native lifecycle regression startup by waiting for a successful daemon ping instead of treating socket-file creation as readiness.
+- Full source regression output is captured to a build log and summarized concisely on failure while still running the complete suite by default.
+- No database schema, audio-path, DSP, UI, or deployment-mode behavior change.
+- Updated APP_VERSION and native daemon version to 6031.
+
+v6032 - 2026-08-13
+-------------------
+- Fixed the crossfade decoder-tail regression harness so it validates final physical playback duration from the exact terminal native_audio_probe_eof event instead of a post-terminal generic probe snapshot that can switch candidate slots on slower builders.
+- Restored live pytest progress to the build console while preserving the complete source-regression log file for diagnostics.
+- Kept the full source regression suite enabled by default.
+- No database schema, audio-path, DSP, UI, encoder, queue, scheduler, or deployment-mode behavior change.
+- Updated APP_VERSION and native daemon version to 6032.
+
+
+v6033 - 2026-08-13
+-------------------
+- Fixed the Linux buildkit final-package root verifier so the intentionally packaged docs/ directory is accepted instead of being rejected as an unexpected root entry.
+- Added explicit final-package checks for docs/DEPLOYMENT_GUIDE.md, docs/NGINX_PUBLIC_HTTPS.md and docs/nginx_web_broadcaster.conf.example.
+- Added archive-level documentation checks so the generated tar.gz cannot pass release verification if the deployment documentation is missing.
+- Kept the v6032 source regression suite, live pytest progress, database schema, audio path, DSP, UI, encoder, queue, scheduler and deployment behavior unchanged.
+- Updated APP_VERSION and native daemon version to 6033.
+
+v6034 - 2026-08-13
+-------------------
+- Fixed the final tar.gz documentation verifier in the Linux buildkit: the previous `tar -tzf ... | grep -q` check could report a false missing-documentation error under `set -o pipefail` because grep exits early after a match and tar can receive SIGPIPE.
+- The archive member list is now materialized once into a regular file and all required deployment documentation is verified against that stable list, eliminating the SIGPIPE/pipefail false negative.
+- Kept the v6033 package-root docs allowance, final-package documentation checks, source regression behavior, database schema, audio path, DSP, UI, encoder, queue, scheduler and deployment behavior unchanged.
+- Updated APP_VERSION and native daemon version to 6034.
+
+v6035 - 2026-08-13
+-------------------
+- Fixed local-track metadata priority so embedded artist/title tags are used by the canonical native queue descriptor, UI Now Playing state and outgoing Icecast metadata instead of being overwritten by filename-derived values.
+- Kept filename parsing as the fallback for untagged or partially tagged local media; existing year metadata behavior is unchanged.
+- Added regression coverage where embedded artist/title deliberately differ from the filename, plus an explicit untagged filename-fallback check.
+- No database schema, audio PCM path, DSP, encoder, scheduler, deployment-mode or nginx behavior change.
+- Updated APP_VERSION and native daemon version to 6035.
+
+v6036 - 2026-08-13
+- Stabilized the native Icecast live-output-add regression harness without weakening the runtime invariant.
+- The Icecast test daemon now waits for protocol readiness and discards unused daemon stdout/stderr instead of leaving an unread PIPE that could create test-only backpressure.
+- The live output-add test now establishes a stable on-air encoder baseline before attaching the second branch, then still requires encoder_generation, pipeline_restart_count and the existing MP3 connect_count to remain unchanged.
+- Kept the v6035 ID3 artist/title priority fix, database schema, audio path, DSP, UI, encoder runtime, queue, scheduler and deployment behavior unchanged.
+- Updated APP_VERSION and native daemon version to 6036.
+
+v6037 - 2026-08-13
+-------------------
+- Hardened native regression startup synchronization across the probe, PCM-analysis, diagnostics, corrupt-audio and daemon-sync harnesses: socket-file creation is no longer treated as daemon readiness.
+- Native test clients now wait for a successful protocol ping before issuing the first state-changing command, eliminating intermittent ConnectionRefusedError failures on slower or loaded builders.
+- Removed unread daemon stdout pipes from the affected high-volume native test harnesses so test-only pipe backpressure cannot stall startup or playback diagnostics.
+- Kept the v6035 ID3 artist/title priority fix and all application runtime, database schema, audio path, DSP, encoder, queue, scheduler, UI and deployment behavior unchanged.
+- Updated APP_VERSION and native daemon version to 6037.
+
+v6038 - 2026-08-14
+-------------------
+- Fixed public nginx/HTTPS handling for invalid Host and other routing failures under Flask 3.1 TRUSTED_HOSTS validation.
+- The deny-by-default authentication gate now preserves routing exceptions before attempting url_for("login"), so untrusted Host requests return the intended HTTP 400 instead of raising AttributeError from a missing URL adapter; unknown trusted-host routes retain their normal 404 behavior.
+- Added regression coverage that requires routing errors to be propagated before authentication redirects.
+- Kept the v6035 ID3 artist/title priority fix and all audio, DSP, encoder, queue, scheduler, database, Studio UI and deployment settings unchanged.
+- Updated APP_VERSION and native daemon version to 6038.
+
+v6039 - 2026-08-14
+-------------------
+- Stabilized native audio-probe regression timing by replacing scheduler-dependent fixed sleeps with condition-based playback progress waits where the test requires actual state advancement.
+- The stop/final-duration regression now waits for a measurable played duration before ending the track, preventing a valid sub-millisecond start state from being frozen as 0 ms on a loaded builder.
+- Applied the same deterministic state-wait pattern to HTTP stream progress, seek activation, active-voice handoff, descriptor replacement and crossfade setup checks; observation sleeps remain only where elapsed time itself is part of the invariant.
+- Added regression coverage that prevents these progress-sensitive checks from reverting to fixed-delay assumptions.
+- Kept the v6035 ID3 artist/title priority fix, v6038 trusted-host routing fix and all application runtime, database schema, audio path, DSP, encoder, queue, scheduler, Studio UI and deployment behavior unchanged.
+- Updated APP_VERSION and native daemon version to 6039.
+
+v6040 - 2026-08-14
+-------------------
+- Suppressed the harmless FFmpeg/libavformat malformed TCON genre-frame noise that could print `Cannot read BOM value, input too short` followed by `Error reading frame TCON, skipped` while scanning local MP3 ID3 metadata.
+- The filter remains deliberately narrow: it matches the exact BOM parser message only on AVFormatContext logs and inspects the variadic frame-name argument so only TCON frame-skip messages are hidden; malformed TIT2/artist/other ID3 frame errors and unrelated libav failures remain visible.
+- Added source and runtime regression coverage proving that the two observed TCON console lines are suppressed while a malformed TIT2 frame warning and an unrelated libav error still reach stderr.
+- Kept the v6035 ID3 artist/title priority fix, v6038 trusted-host routing fix, v6039 deterministic native-probe tests, nginx/HTTPS deployment, audio path, DSP, encoder, queue, scheduler, database and Studio UI behavior unchanged.
+- Updated APP_VERSION and native daemon version to 6040.
+
+v6041 - 2026-08-14
+- Fixed the v6040 malformed TCON console filter against the actual FFmpeg 7.1.5 ID3 parser path: these two ID3v2 diagnostics are emitted with a NULL av_log context, so the previous AVFormatContext-only guard could not match them in production.
+- Kept the native libav filter exact: only `Cannot read BOM value, input too short` and `Error reading frame TCON, skipped` are suppressed; unrelated ID3/libav failures remain visible.
+- Added a second exact process-console filter for the same two records so inherited native-engine stderr cannot leak this known harmless noise to the terminal, systemd stream or Settings Console.
+- Added a real malformed ID3v2/TCON regression that calls avformat_open_input through the bundled FFmpeg 7.1.5 runtime and verifies that the TCON noise is hidden while an unrelated real libav error remains visible.
+- Updated APP_VERSION and native daemon version to 6041.
+
+v6042 - 2026-08-16
+-------------------
+- Generalized the malformed ID3 metadata console filtering after long-running v6041 testing exposed additional harmless FFmpeg 7.1.5 parser diagnostics: `Incorrect BOM value`, `Error reading comment frame, skipped`, and skipped TENC, TCOP and TOPE text frames.
+- The native libav callback now suppresses the exact malformed-ID3 BOM/comment/lyrics parser formats and `Error reading frame %s, skipped` only when the variadic frame name is a valid 3/4-character uppercase-alphanumeric ID3 frame identifier. This covers malformed text/GEOB metadata without muting generic container, decoder, encoder or I/O errors.
+- The process-console second line of defense now mirrors the same ID3-shaped rule so inherited native-engine stderr cannot leak these metadata-only diagnostics to the terminal, systemd stream or Settings Console.
+- Added a real FFmpeg 7.1.5 malformed-ID3 regression using COMM, TENC, TCOP and TOPE frames with invalid UTF-16 BOM data. The observed metadata noise must be absent while genuine MP3/libav probe errors remain visible.
+- Kept the v6035 embedded artist/title priority, nginx/HTTPS deployment, audio PCM path, DSP, encoder, queue, scheduler, database and Studio UI behavior unchanged.
+- Updated APP_VERSION and native daemon version to 6042.

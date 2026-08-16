@@ -43,7 +43,10 @@
       </div>
       <a class="studio-btn studio-btn--ghost" href="{{ url_for('dashboard') }}">Dashboard</a>
       <button class="studio-btn studio-btn--ghost" id="studio-settings-open" type="button">Settings</button>
-      <a class="studio-btn studio-btn--ghost studio-btn--logout" href="{{ url_for('logout') }}">Logout ({{ session.get('username') }})</a>
+      <form method="post" action="{{ url_for('logout') }}" class="studio-logout-form">
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+        <button class="studio-btn studio-btn--ghost studio-btn--logout" type="submit">Logout ({{ session.get('username') }})</button>
+      </form>
     </div>
   </header>
 
@@ -183,7 +186,10 @@
           <button type="button" class="queue-toolbar__btn" id="encoders-add-btn" title="Add encoder" aria-label="Add encoder">+</button>
           <button type="button" class="queue-toolbar__btn" id="encoders-remove-btn" title="Remove encoder" aria-label="Remove encoder">−</button>
           <button type="button" class="queue-toolbar__btn encoder-toolbar__btn encoder-toolbar__btn--config" id="encoders-config-btn" title="Encoder configuration" aria-label="Encoder configuration">
-            <span class="encoder-config-icon" aria-hidden="true"></span>
+            <span class="encoder-config-icon" aria-hidden="true">
+              <span class="encoder-config-icon__hammer"><i class="encoder-config-icon__hammer-head"></i><i class="encoder-config-icon__hammer-shaft"></i></span>
+              <span class="encoder-config-icon__driver"><span class="encoder-config-icon__driver-inner"><i class="encoder-config-icon__driver-tip"></i><i class="encoder-config-icon__driver-shaft"></i><i class="encoder-config-icon__driver-handle"></i></span></span>
+            </span>
           </button>
           <button type="button" class="queue-toolbar__btn" id="encoders-start-btn" title="Start encoder" aria-label="Start encoder">▶</button>
           <button type="button" class="queue-toolbar__btn" id="encoders-stop-btn" title="Stop encoder" aria-label="Stop encoder">■</button>
@@ -207,7 +213,10 @@
           <button type="button" class="queue-toolbar__btn" id="scripts-add-btn" title="Add" aria-label="Add">+</button>
           <button type="button" class="queue-toolbar__btn" id="scripts-remove-btn" title="Remove" aria-label="Remove">−</button>
           <button type="button" class="queue-toolbar__btn encoder-toolbar__btn encoder-toolbar__btn--config" id="scripts-config-btn" title="Configuration" aria-label="Configuration">
-            <span class="encoder-config-icon" aria-hidden="true"></span>
+            <span class="encoder-config-icon" aria-hidden="true">
+              <span class="encoder-config-icon__hammer"><i class="encoder-config-icon__hammer-head"></i><i class="encoder-config-icon__hammer-shaft"></i></span>
+              <span class="encoder-config-icon__driver"><span class="encoder-config-icon__driver-inner"><i class="encoder-config-icon__driver-tip"></i><i class="encoder-config-icon__driver-shaft"></i><i class="encoder-config-icon__driver-handle"></i></span></span>
+            </span>
           </button>
           <button type="button" class="queue-toolbar__btn" id="scripts-start-btn" title="Start" aria-label="Start">▶</button>
           <button type="button" class="queue-toolbar__btn" id="scripts-stop-btn" title="Stop" aria-label="Stop">■</button>
@@ -634,13 +643,13 @@
   <div class="panel-body panel-body--browser-window panel-body--studio-users-add-window">
     <form id="studio-users-add-form" class="studio-users-form studio-users-add-form" autocomplete="off">
       <label>Username
-        <input type="text" id="studio-users-add-username" autocomplete="off">
+        <input type="text" id="studio-users-add-username" autocomplete="off" maxlength="64">
       </label>
       <label>Password
-        <input type="password" id="studio-users-add-password" autocomplete="new-password">
+        <input type="password" id="studio-users-add-password" autocomplete="new-password" minlength="12" maxlength="256">
       </label>
       <label>Confirm password
-        <input type="password" id="studio-users-add-password2" autocomplete="new-password">
+        <input type="password" id="studio-users-add-password2" autocomplete="new-password" minlength="12" maxlength="256">
       </label>
     </form>
   </div>
@@ -660,13 +669,13 @@
     <form id="studio-users-password-form" class="studio-users-form studio-users-password-form" autocomplete="off">
       <div id="studio-users-password-username" class="studio-users-form__meta"></div>
       <label>Current password
-        <input type="password" id="studio-users-current-password" autocomplete="current-password">
+        <input type="password" id="studio-users-current-password" autocomplete="current-password" maxlength="256">
       </label>
       <label>New password
-        <input type="password" id="studio-users-password1" autocomplete="new-password">
+        <input type="password" id="studio-users-password1" autocomplete="new-password" minlength="12" maxlength="256">
       </label>
       <label>Confirm password
-        <input type="password" id="studio-users-password2" autocomplete="new-password">
+        <input type="password" id="studio-users-password2" autocomplete="new-password" minlength="12" maxlength="256">
       </label>
     </form>
   </div>

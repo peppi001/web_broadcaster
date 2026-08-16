@@ -41,17 +41,22 @@
               {% endif %}
             {% endwith %}
             <form method="post" autocomplete="off" class="login-form">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
                 <input type="text" name="fake_username" autocomplete="username" tabindex="-1" aria-hidden="true" style="position:absolute; left:-9999px; top:-9999px; height:1px; width:1px; opacity:0;">
                 <input type="password" name="fake_password" autocomplete="new-password" tabindex="-1" aria-hidden="true" style="position:absolute; left:-9999px; top:-9999px; height:1px; width:1px; opacity:0;">
                 <input type="text" name="website" tabindex="-1" aria-hidden="true" autocomplete="off" style="position:absolute; left:-9999px; top:-9999px; height:1px; width:1px; opacity:0;">
+                <label class="login-label">Initial setup token
+                    <input class="login-input" type="password" name="setup_token" required autocomplete="off" maxlength="128" value="">
+                </label>
+                <div class="login-panel__subtitle">Read this one-time token from the server console or <code>db/.setup_token</code>.</div>
                 <label class="login-label">Username
-                    <input class="login-input" type="text" name="username" required autocomplete="off" autocapitalize="none" spellcheck="false" value="">
+                    <input class="login-input" type="text" name="username" required maxlength="64" autocomplete="off" autocapitalize="none" spellcheck="false" value="">
                 </label>
                 <label class="login-label">Password
-                    <input class="login-input" type="password" name="password" required autocomplete="new-password" value="">
+                    <input class="login-input" type="password" name="password" required minlength="12" maxlength="256" autocomplete="new-password" value="">
                 </label>
                 <label class="login-label">Confirm Password
-                    <input class="login-input" type="password" name="password2" required autocomplete="new-password" value="">
+                    <input class="login-input" type="password" name="password2" required minlength="12" maxlength="256" autocomplete="new-password" value="">
                 </label>
                 <button class="login-submit" type="submit">Save and continue</button>
             </form>

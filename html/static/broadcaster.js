@@ -429,7 +429,9 @@ document.addEventListener('click', function(e){
   let studioOnAirAutoStartInFlight = false;
   let studioCurrentElapsed = 0;
   let studioCurrentDurationDisplay = '';
-  let studioLastUpdate = Date.now();
+  let studioProgressAnchorElapsed = 0;
+  let studioProgressAnchorNowMs = 0;
+  let studioProgressIdentity = '';
   let studioIsPlaying = false;
   let studioIsPaused = false;
   let studioLastSongFile = null;
@@ -456,10 +458,85 @@ document.addEventListener('click', function(e){
   // Browser-side refresh intervals. Keep UI timers local and avoid hitting
   // SQLite/native audio engine once per second for unchanged background data.
   const STUDIO_STATUS_POLL_MS = 2000;
+  const STUDIO_PROGRESS_UI_TICK_MS = 100;
+  const STUDIO_PROGRESS_HARD_SYNC_SECONDS = 1.5;
+  const STUDIO_PROGRESS_MAX_SOFT_CORRECTION_SECONDS = 0.08;
   const STUDIO_ON_AIR_SYNC_MS = 10000;
   const STUDIO_QUEUE_POLL_MS = 5000;
   const STUDIO_HISTORY_POLL_MS = 30000;
   const STUDIO_ENCODERS_POLL_MS = 15000;
+
+  function studioMonotonicNowMs(){
+    if (typeof performance !== 'undefined' && performance && typeof performance.now === 'function') {
+      return performance.now();
+    }
+    return Date.now();
+  }
+
+  function studioSongProgressIdentity(song){
+    const value = song || {};
+    return [
+      (value.file || '').toString(),
+      Number(value.queue_id || 0),
+      Number(value.track_id || 0),
+      (value.active_player || '').toString()
+    ].join('|');
+  }
+
+  function setStudioProgressAnchor(elapsed, identity = studioProgressIdentity){
+    const safeElapsed = Math.max(0, Number(elapsed) || 0);
+    studioProgressAnchorElapsed = safeElapsed;
+    studioProgressAnchorNowMs = studioMonotonicNowMs();
+    studioProgressIdentity = (identity || '').toString();
+    studioCurrentElapsed = safeElapsed;
+    return safeElapsed;
+  }
+
+  function readStudioProgressElapsed(duration = studioCurrentDuration){
+    let elapsed = Math.max(0, Number(studioProgressAnchorElapsed) || 0);
+    if (studioIsPlaying && !studioIsPaused && studioProgressAnchorNowMs > 0) {
+      elapsed += Math.max(0, (studioMonotonicNowMs() - studioProgressAnchorNowMs) / 1000);
+    }
+    const safeDuration = Number(duration) || 0;
+    if (safeDuration > 0) elapsed = Math.min(safeDuration, elapsed);
+    return elapsed;
+  }
+
+  function syncStudioProgressFromServer(serverElapsed, duration, identity, forceHardSync = false){
+    const safeDuration = Number(duration) || 0;
+    let authoritativeElapsed = Math.max(0, Number(serverElapsed) || 0);
+    if (safeDuration > 0) authoritativeElapsed = Math.min(safeDuration, authoritativeElapsed);
+
+    const nextIdentity = (identity || '').toString();
+    const identityChanged = nextIdentity !== studioProgressIdentity;
+    const now = studioMonotonicNowMs();
+    let nextElapsed = authoritativeElapsed;
+
+    if (!forceHardSync && !identityChanged && studioProgressAnchorNowMs > 0 && studioIsPlaying && !studioIsPaused) {
+      let predicted = Math.max(0, Number(studioProgressAnchorElapsed) || 0);
+      predicted += Math.max(0, (now - studioProgressAnchorNowMs) / 1000);
+      if (safeDuration > 0) predicted = Math.min(safeDuration, predicted);
+
+      const drift = authoritativeElapsed - predicted;
+      if (Math.abs(drift) < STUDIO_PROGRESS_HARD_SYNC_SECONDS) {
+        // Never step the visible clock backwards for normal sub-threshold
+        // status jitter. Small positive drift is absorbed gradually; a real
+        // discontinuity (seek/track change) still uses the hard-sync path.
+        const correction = Math.max(
+          0,
+          Math.min(STUDIO_PROGRESS_MAX_SOFT_CORRECTION_SECONDS, drift)
+        );
+        nextElapsed = predicted + correction;
+      }
+    }
+
+    if (safeDuration > 0) nextElapsed = Math.min(safeDuration, nextElapsed);
+    studioProgressAnchorElapsed = Math.max(0, nextElapsed);
+    studioProgressAnchorNowMs = now;
+    studioProgressIdentity = nextIdentity;
+    studioCurrentElapsed = studioProgressAnchorElapsed;
+    return studioCurrentElapsed;
+  }
 
 
   function setStudioSettingsFeedback(message, type = ''){
@@ -608,6 +685,10 @@ document.addEventListener('click', function(e){
       setStudioUsersFeedback('Passwords do not match.', 'error');
       return;
     }
+    if (password.length < 12 || password.length > 256) {
+      setStudioUsersFeedback('Password must be 12 to 256 characters long.', 'error');
+      return;
+    }
     if (els.studioUsersAddSave) els.studioUsersAddSave.disabled = true;
     try {
       const response = await fetch('/users/add', {
@@ -626,6 +707,7 @@ document.addEventListener('click', function(e){
       if (message === 'username_exists') message = 'That username already exists.';
       else if (message === 'password_mismatch') message = 'Passwords do not match.';
       else if (message === 'missing_fields') message = 'Username and both password fields are required.';
+      else if (message === 'password_policy') message = 'Password must be 12 to 256 characters long.';
       setStudioUsersFeedback(message, 'error');
     } finally {
       if (els.studioUsersAddSave) els.studioUsersAddSave.disabled = false;
@@ -667,6 +749,10 @@ document.addEventListener('click', function(e){
       setStudioUsersFeedback('Passwords do not match.', 'error');
       return;
     }
+    if (password.length < 12 || password.length > 256) {
+      setStudioUsersFeedback('Password must be 12 to 256 characters long.', 'error');
+      return;
+    }
     if (els.studioUsersPasswordSave) els.studioUsersPasswordSave.disabled = true;
     try {
       const response = await fetch('/api/users/change-password', {
@@ -685,6 +771,7 @@ document.addEventListener('click', function(e){
       if (message === 'password_mismatch') message = 'Passwords do not match.';
       else if (message === 'missing_fields') message = 'Current password and both new password fields are required.';
       else if (message === 'invalid_current_password') message = 'Current password is incorrect.';
+      else if (message === 'password_policy') message = 'Password must be 12 to 256 characters long.';
       setStudioUsersFeedback(message, 'error');
     } finally {
       if (els.studioUsersPasswordSave) els.studioUsersPasswordSave.disabled = false;
@@ -4866,12 +4953,11 @@ document.addEventListener('click', function(e){
       const nextDurationDisplay = ((result.duration_display || '') + '').trim() || formatSeconds(nextDuration);
       const pct = nextDuration > 0 ? Math.min(100, Math.max(0, (nextElapsed / nextDuration) * 100)) : 0;
 
-      studioCurrentElapsed = nextElapsed;
+      setStudioProgressAnchor(nextElapsed);
       if (nextDuration > 0) {
         studioCurrentDuration = nextDuration;
       }
       studioCurrentDurationDisplay = nextDurationDisplay;
-      studioLastUpdate = Date.now();
 
       if (els.deckProgressFill) els.deckProgressFill.style.width = `${pct}%`;
       if (els.deckTime) {
@@ -4968,6 +5054,7 @@ document.addEventListener('click', function(e){
       const serverDuration = Number(song.duration || 0);
       const serverDurationDisplay = (song.duration_display || '').toString();
       const songFile = song.file || null;
+      const songProgressIdentity = studioSongProgressIdentity(song);
       let effectivePauseActive = pauseActive;
       const effectiveStopActive = Boolean(studioStopUiOverride || statusValue === 'stopped');
 
@@ -4985,14 +5072,14 @@ document.addEventListener('click', function(e){
       let durationDisplay = serverDurationDisplay;
       const resumeHoldActive = !effectiveStopActive && !effectivePauseActive && studioResumeHoldUntil > Date.now();
       if (resumeHoldActive) {
-        const localDelta = Math.max(0, (Date.now() - Number(studioLastUpdate || Date.now())) / 1000);
-        elapsed = Math.max(0, (Number(studioCurrentElapsed) || 0) + localDelta);
         duration = Number(studioCurrentDuration) > 0 ? Number(studioCurrentDuration) : serverDuration;
         durationDisplay = studioCurrentDurationDisplay || serverDurationDisplay;
+        elapsed = readStudioProgressElapsed(duration);
       }
       if (!effectiveStopActive && effectivePauseActive) {
         if (!studioIsPaused) {
-          studioPauseFrozenElapsed = Number.isFinite(studioCurrentElapsed) ? studioCurrentElapsed : serverElapsed;
+          const liveElapsed = readStudioProgressElapsed(duration);
+          studioPauseFrozenElapsed = Number.isFinite(liveElapsed) ? liveElapsed : serverElapsed;
           studioPauseFrozenDuration = Number.isFinite(studioCurrentDuration) ? studioCurrentDuration : serverDuration;
           studioPauseFrozenDurationDisplay = studioCurrentDurationDisplay || serverDurationDisplay;
         }
@@ -5000,12 +5087,28 @@ document.addEventListener('click', function(e){
         duration = Number.isFinite(studioPauseFrozenDuration) && studioPauseFrozenDuration > 0 ? studioPauseFrozenDuration : serverDuration;
         durationDisplay = studioPauseFrozenDurationDisplay || serverDurationDisplay;
       }
-      const pct = duration > 0 ? Math.min(100, (elapsed / duration) * 100) : 0;
-
       if (effectiveStopActive) {
         elapsed = 0;
+        setStudioProgressAnchor(0, '');
+      } else if (effectivePauseActive) {
+        elapsed = setStudioProgressAnchor(elapsed, songProgressIdentity);
+      } else if (!resumeHoldActive) {
+        const forceHardSync = (
+          songProgressIdentity !== studioProgressIdentity
+          || !studioIsPlaying
+          || studioIsPaused
+        );
+        elapsed = syncStudioProgressFromServer(
+          serverElapsed,
+          duration,
+          songProgressIdentity,
+          forceHardSync
+        );
+      } else {
+        setStudioProgressAnchor(elapsed, songProgressIdentity);
       }
-      studioCurrentElapsed = elapsed;
+
+      const pct = duration > 0 ? Math.min(100, (elapsed / duration) * 100) : 0;
       studioCurrentDuration = duration;
       studioCurrentDurationDisplay = durationDisplay;
       studioIsPlaying = statusValue === 'play' && !effectivePauseActive && !effectiveStopActive;
@@ -5027,8 +5130,6 @@ document.addEventListener('click', function(e){
         studioQueueEtaBaseMs = 0;
         studioQueueEtaSignature = '';
       }
-      if (!effectivePauseActive) studioLastUpdate = Date.now();
-
       if (els.deckArtist) els.deckArtist.textContent = `Artist: ${artist}`;
       if (els.deckTitle) els.deckTitle.textContent = `Title: ${title}`;
       if (els.deckYear) els.deckYear.textContent = `Year: ${year}`;
@@ -5059,7 +5160,7 @@ document.addEventListener('click', function(e){
       if (studioManualNextPendingSince && (Date.now() - studioManualNextPendingSince) > 35000) {
         setStudioManualNextPending(false, 0);
       }
-      studioCurrentElapsed = 0;
+      setStudioProgressAnchor(0, '');
       studioCurrentDuration = 0;
       studioCurrentDurationDisplay = '';
       studioIsPlaying = false;
@@ -5078,11 +5179,8 @@ document.addEventListener('click', function(e){
     if (!studioIsPlaying || studioIsPaused) return;
     const duration = Number(studioCurrentDuration) || 0;
     if (!(duration > 0)) return;
-    const now = Date.now();
-    const delta = Math.max(0, (now - Number(studioLastUpdate || now)) / 1000);
-    const elapsed = Math.min(duration, Math.max(0, (Number(studioCurrentElapsed) || 0) + delta));
+    const elapsed = readStudioProgressElapsed(duration);
     studioCurrentElapsed = elapsed;
-    studioLastUpdate = now;
     const pct = Math.min(100, Math.max(0, (elapsed / duration) * 100));
     if (els.deckProgressFill) els.deckProgressFill.style.width = `${pct}%`;
     if (els.deckTime) {
@@ -6675,8 +6773,7 @@ document.addEventListener('click', function(e){
         studioStopUiOverride = true;
         studioPauseUiOverride = false;
         studioPauseFrozenElapsed = 0;
-        studioCurrentElapsed = 0;
-        studioLastUpdate = Date.now();
+        setStudioProgressAnchor(0, '');
         studioResumeHoldUntil = 0;
         studioIsPaused = false;
         studioIsPlaying = false;
@@ -6696,9 +6793,11 @@ document.addEventListener('click', function(e){
         studioPauseUiOverride = pauseActive;
         studioPauseUiOverrideIssuedAt = Date.now();
         if (pauseActive) {
-          studioPauseFrozenElapsed = Number.isFinite(studioCurrentElapsed) ? studioCurrentElapsed : 0;
+          const liveElapsed = readStudioProgressElapsed(studioCurrentDuration);
+          studioPauseFrozenElapsed = Number.isFinite(liveElapsed) ? liveElapsed : 0;
           studioPauseFrozenDuration = Number.isFinite(studioCurrentDuration) ? studioCurrentDuration : 0;
           studioPauseFrozenDurationDisplay = studioCurrentDurationDisplay || '';
+          setStudioProgressAnchor(studioPauseFrozenElapsed);
         } else {
           const resumedElapsed = Number(result && result.elapsed);
           const resumedDuration = Number(result && result.duration);
@@ -6714,7 +6813,7 @@ document.addEventListener('click', function(e){
             studioCurrentDuration = studioPauseFrozenDuration;
             studioCurrentDurationDisplay = studioPauseFrozenDurationDisplay || formatSeconds(studioPauseFrozenDuration);
           }
-          studioLastUpdate = Date.now();
+          setStudioProgressAnchor(studioCurrentElapsed);
           studioResumeHoldUntil = Date.now() + 1500;
         }
         studioIsPaused = pauseActive;
@@ -8976,7 +9075,7 @@ if (completed) {
     }
 
     setInterval(updateClock, 1000);
-    setInterval(updateDeckProgressLocalClock, 1000);
+    setInterval(updateDeckProgressLocalClock, STUDIO_PROGRESS_UI_TICK_MS);
     setInterval(updateQueueEtaLocalClock, 1000);
     setInterval(loadStatus, STUDIO_STATUS_POLL_MS);
     setInterval(syncDeckOnAirButton, STUDIO_ON_AIR_SYNC_MS);

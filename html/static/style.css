@@ -1961,3 +1961,5 @@ select[name="priority"].scheduler-dark-field {
 .scheduler-rule-controls > * {
     align-self: center;
 }
+
+.navbar-link-button{border:0;background:transparent;color:inherit;font:inherit;padding:0;cursor:pointer;text-decoration:inherit}

@@ -41,14 +41,15 @@
               {% endif %}
             {% endwith %}
             <form method="post" autocomplete="off" class="login-form">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
                 <input type="text" name="username_dummy" autocomplete="username" tabindex="-1" aria-hidden="true" style="position:absolute; left:-9999px; top:-9999px; height:1px; width:1px; opacity:0;">
                 <input type="password" name="password_dummy" autocomplete="new-password" tabindex="-1" aria-hidden="true" style="position:absolute; left:-9999px; top:-9999px; height:1px; width:1px; opacity:0;">
                 <input type="text" name="website" tabindex="-1" aria-hidden="true" autocomplete="off" style="position:absolute; left:-9999px; top:-9999px; height:1px; width:1px; opacity:0;">
                 <label class="login-label">Username
-                    <input class="login-input" type="text" name="username" required autocomplete="off" autocapitalize="none" spellcheck="false" value="">
+                    <input class="login-input" type="text" name="username" required maxlength="64" autocomplete="off" autocapitalize="none" spellcheck="false" value="">
                 </label>
                 <label class="login-label">Password
-                    <input class="login-input" type="password" name="password" required autocomplete="new-password" value="">
+                    <input class="login-input" type="password" name="password" required maxlength="256" autocomplete="current-password" value="">
                 </label>
                 <button class="login-submit" type="submit">Login</button>
             </form>

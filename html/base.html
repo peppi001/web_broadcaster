@@ -4,6 +4,43 @@
     <meta charset="utf-8">
     <title>Web Broadcaster{% if nav_station_label %} ({{ nav_station_label }}){% endif %}</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    <script>
+    (function(){
+      "use strict";
+      const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+      const csrfToken = csrfMeta ? (csrfMeta.getAttribute("content") || "") : "";
+      const safeMethods = new Set(["GET", "HEAD", "OPTIONS"]);
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = function(input, init){
+        const options = Object.assign({}, init || {});
+        let requestUrl = "";
+        let requestMethod = "GET";
+        let inheritedHeaders = null;
+        try{
+          if (typeof Request !== "undefined" && input instanceof Request){
+            requestUrl = input.url;
+            requestMethod = input.method || "GET";
+            inheritedHeaders = input.headers;
+          }else{
+            requestUrl = String(input);
+          }
+          requestMethod = String(options.method || requestMethod || "GET").toUpperCase();
+          const resolved = new URL(requestUrl, window.location.href);
+          if (resolved.origin === window.location.origin && !safeMethods.has(requestMethod)){
+            const headers = new Headers(inheritedHeaders || undefined);
+            if (options.headers){
+              new Headers(options.headers).forEach(function(value, key){ headers.set(key, value); });
+            }
+            headers.set("X-CSRF-Token", csrfToken);
+            options.headers = headers;
+            if (!options.credentials) options.credentials = "same-origin";
+          }
+        }catch(_err){}
+        return originalFetch(input, options);
+      };
+    })();
+    </script>
     <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
 {% block extra_head %}{% endblock %}
 </head>
@@ -32,20 +69,6 @@
 </div>
             </div>
 
-            {% if session.get('user_id') and stations_defined and not is_stations_dashboard %}
-                <button id="audio-engine-toggle"
-                        class="audio-engine-toggle audio-engine-start"
-                        type="button"
-                        title="Start"
-                        aria-label="Start"
-                        data-on-src="{{ url_for('static', filename='icons/rocker_on.webp') }}"
-                        data-off-src="{{ url_for('static', filename='icons/rocker_off.webp') }}">
-                    <svg id="audio-engine-rocker" class="audio-engine-rocker" aria-hidden="true" focusable="false">
-                        <use href="{{ url_for('static', filename='icons/power_button.svg') }}#powerButton" xlink:href="{{ url_for('static', filename='icons/power_button.svg') }}#powerButton"></use>
-                    </svg>
-                </button>
-<span id="audio-engine-uptime" class="audio-engine-uptime" aria-live="polite"></span>
-            {% endif %}
         </div>
         <div class="navbar-links">
             {% if session.get('user_id') %}
@@ -56,7 +79,10 @@
                 {% if is_stations_dashboard %}
                     <a href="#" id="add-user-link">Add new user</a>
                 {% endif %}
-                <a href="{{ url_for('logout') }}">Logout ({{ session.get('username') }})</a>
+                <form method="post" action="{{ url_for('logout') }}" style="display:inline;margin:0;">
+                    <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" class="navbar-link-button">Logout ({{ session.get('username') }})</button>
+                </form>
             {% endif %}
         </div>
     </nav>
