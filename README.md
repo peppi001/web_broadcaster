@@ -2,27 +2,29 @@
 
 <img width="887" height="477" alt="web_broadcaster_small" src="https://github.com/user-attachments/assets/c430886a-6fe1-4346-be73-a8d22036a16e" />
 
-
 **Web Broadcaster** is a self-contained, browser-operated, multi-station radio automation and Icecast broadcasting system for Linux.
 
-The project combines a Python/Flask control application with a dedicated native C audio daemon. The Python application owns the web interface, station configuration, SQLite persistence, queue management, AutoDJ, scheduling, history, user management and runtime orchestration. The native daemon owns the real-time audio path: direct FFmpeg/libav decoding, A/B decks, cueing, seeking, fades, transitions, mixing, in-process SoundSolution DSP, encoding and Icecast transport.
+The project combines a Python/Flask control application with a dedicated native C audio daemon. The Python application owns the web interface, authentication, station configuration, SQLite persistence, queue management, AutoDJ, scheduling, history, user management and runtime orchestration. The native daemon owns the real-time audio path: direct FFmpeg/libav decoding, A/B decks, cueing, seeking, fades, transitions, mixing, in-process SoundSolution DSP, encoding and Icecast transport.
 
-The current release is **Web Broadcaster v6024**.
+The current release is **Web Broadcaster v6042**.
 
 > **Repository model**
 >
-> - This Git repository contains the unpacked Web Broadcaster source code, tests and documentation.
-> - The complete offline buildkit is published as a versioned Release asset.
-> - FFmpeg and SoundSolution are treated as fixed, prebuilt binary dependencies. They are not stored in normal Git history and are not rebuilt by the regular Web Broadcaster build.
+> - This Git repository contains the unpacked, architecture-neutral Web Broadcaster source code, tests and documentation.
+> - The complete native buildkit is published as a versioned Release asset.
+> - FFmpeg and SoundSolution are fixed, prebuilt native dependencies. They are not stored in normal Git history and are not rebuilt by the regular Web Broadcaster build.
+> - The recommended public deployment is nginx + HTTPS with Web Broadcaster listening only on loopback.
 
 ---
 
 ## Table of contents
 
 - [Project status](#project-status)
+- [v6042 release summary](#v6042-release-summary)
 - [Main features](#main-features)
 - [Design goals](#design-goals)
 - [System architecture](#system-architecture)
+- [Deployment architecture](#deployment-architecture)
 - [Audio path](#audio-path)
 - [Process model](#process-model)
 - [Supported platforms](#supported-platforms)
@@ -35,8 +37,10 @@ The current release is **Web Broadcaster v6024**.
 - [Build outputs](#build-outputs)
 - [Final package layout](#final-package-layout)
 - [Installing and starting Web Broadcaster](#installing-and-starting-web-broadcaster)
+- [Deployment modes](#deployment-modes)
 - [First-run setup](#first-run-setup)
 - [Runtime configuration](#runtime-configuration)
+- [Web security model](#web-security-model)
 - [Logging and diagnostics](#logging-and-diagnostics)
 - [Runtime data and backup](#runtime-data-and-backup)
 - [Testing](#testing)
@@ -48,6 +52,7 @@ The current release is **Web Broadcaster v6024**.
 - [Known boundaries](#known-boundaries)
 - [Dependency manifest](#dependency-manifest)
 - [License and redistribution](#license-and-redistribution)
+- [Version history](#version-history)
 
 ---
 
@@ -55,19 +60,42 @@ The current release is **Web Broadcaster v6024**.
 
 | Item | Current state |
 |---|---|
-| Web Broadcaster version | `6024` |
-| Native daemon protocol/version | `6024` |
-| Release buildkit revision | `build_v6024_linux-r4-active-probe-terminal-test` |
+| Web Broadcaster version | `6042` |
+| Native daemon protocol/version | `6042` |
+| Release buildkit revision | `build_v6042_linux-r1-id3-metadata-noise-class-filter` |
 | AMD64 build target | Debian 12, generic x86-64/SSE2 baseline |
 | ARM64 build target | Raspberry Pi 5, AArch64, Cortex-A76 |
 | Audio backend | Native C daemon with direct FFmpeg 7.1.5 library integration |
 | DSP backend | In-process SoundSolution Native shared library |
-| Streaming output | Icecast |
+| Streaming output | Native Icecast source transport |
+| Web server | Cheroot 11.1.2 WSGI server |
 | Python packaging | PyInstaller `onedir` |
 | Default HTTP port | `15000` |
+| Default deployment mode | Trusted LAN, HTTP, `0.0.0.0:15000` |
+| Recommended public mode | nginx HTTPS reverse proxy, backend `127.0.0.1:15000` |
 | Database | SQLite |
 
-Version 6024 preserves the final v6023 runtime package layout while introducing one self-contained buildkit for both supported native platforms.
+v6042 preserves the established flat final `bin/` runtime contract while adding the current production web-security/deployment model and generalized suppression of harmless malformed-ID3 parser noise. The native audio PCM path, SoundSolution DSP path, encoder path, queue, scheduler and database schema are unchanged by the v6040-v6042 console-filter work.
+
+---
+
+## v6042 release summary
+
+The current v6042 source includes all changes made after the original v6024 dual-platform buildkit release. Important user-visible and operational changes include:
+
+- smoother Studio playback-position display using a monotonic browser clock without increasing backend status-poll load;
+- CSS-only crossed hammer/screwdriver Configure icons and removal of obsolete SVG assets;
+- public-Internet hardening of the Flask application, including deny-by-default authentication, CSRF protection, secure session handling, rate limiting, trusted-host support and first-run setup tokens;
+- replacement of the Flask/Werkzeug development server with Cheroot;
+- optional direct Cheroot TLS support;
+- preferred nginx reverse-proxy deployment with Web Broadcaster bound to `127.0.0.1` and nginx terminating HTTPS;
+- dedicated deployment documentation for trusted-LAN and nginx/Certbot/Let's Encrypt operation;
+- embedded local-file artist/title metadata taking priority over filename parsing, with filename parsing retained as fallback;
+- hardened trusted-host error handling under Flask 3.1;
+- deterministic native regression synchronization on loaded build hosts;
+- generalized filtering of known harmless FFmpeg 7.1.5 malformed-ID3 metadata diagnostics while preserving genuine libav/container/decoder/encoder/I/O errors.
+
+The complete chronological history remains in `version.txt`.
 
 ---
 
@@ -82,10 +110,11 @@ Version 6024 preserves the final v6023 runtime package layout while introducing 
 
 ### Browser-based studio
 
-- Dashboard and studio views.
-- Resizable/rearrangeable studio panels with saved layout state.
+- Dashboard and Studio views.
+- Resizable/rearrangeable Studio panels with saved layout state.
 - Current deck, queue, history, playlist/library, encoders and automation controls.
-- Server-sent UI events for queue, history and runtime state updates.
+- Server-Sent Events for queue, history, console and runtime UI updates.
+- Smoothed local playback-position display anchored to authoritative native status.
 - Minimal normal console output.
 
 ### Native audio engine
@@ -132,6 +161,7 @@ Version 6024 preserves the final v6023 runtime package layout while introducing 
 - Per-output connection state, encoded FIFO, reconnect handling and metadata state.
 - Persistent Icecast stream identity fields.
 - Metadata updates without spawning external encoder processes.
+- Embedded artist/title tags preferred for local media; filename parsing remains a fallback.
 
 ### SoundSolution DSP
 
@@ -144,7 +174,7 @@ Version 6024 preserves the final v6023 runtime package layout while introducing 
 
 ### Users and persistence
 
-- Initial setup flow.
+- Protected initial setup flow.
 - User login and logout.
 - User creation, password change and user deletion.
 - Global user/station registry database.
@@ -177,11 +207,15 @@ Network and file decoding do not run in the real-time mixer loop. Decoder worker
 
 FFmpeg and SoundSolution are fixed release inputs, identified by exact versions and SHA-256 checksums. The normal Web Broadcaster build stages these packages but does not rebuild them.
 
-### 6. Minimal runtime dependencies
+### 6. Minimal target-system dependencies
 
-The final package includes the Python runtime through PyInstaller and includes private FFmpeg and SoundSolution shared libraries. The target system only needs the normal compatible Linux runtime libraries, including glibc and GnuTLS dependencies used by the packaged native components.
+The final package includes the Python runtime through PyInstaller and includes private FFmpeg and SoundSolution shared libraries. The target system only needs compatible normal Linux runtime libraries, including glibc and GnuTLS dependencies used by the packaged native components.
 
-### 7. Conservative release changes
+### 7. Fail-closed public deployment
+
+Public-Internet mode requires either direct HTTPS or an explicitly trusted reverse proxy. Reverse-proxy trust is accepted only with a loopback listener. The launcher rejects a public-mode plain-HTTP configuration.
+
+### 8. Conservative release changes
 
 A released tag is immutable. Any change to source, tests, build scripts or packaged runtime files requires a new Web Broadcaster version.
 
@@ -191,11 +225,13 @@ A released tag is immutable. Any change to source, tests, build scripts or packa
 
 ```text
 Browser
-   │
-   │ HTTP / JSON / server-sent events
-   ▼
-Python / Flask Web Broadcaster
+   |
+   | HTTP on trusted LAN
+   | or HTTPS through nginx
+   v
+Cheroot / Flask Web Broadcaster
    ├── authentication and users
+   ├── CSRF/session/security policy
    ├── station registry
    ├── SQLite persistence
    ├── media library and categories
@@ -204,9 +240,9 @@ Python / Flask Web Broadcaster
    ├── scheduler and scripts
    ├── encoder configuration
    └── native-engine lifecycle
-          │
-          │ local Unix socket protocol
-          ▼
+          |
+          | local Unix socket protocol
+          v
 web_broadcaster_engine
    ├── libavformat
    ├── libavcodec
@@ -223,7 +259,7 @@ web_broadcaster_engine
 | Python application | Native daemon |
 |---|---|
 | Web UI and API | File/network decoding |
-| Authentication | PCM conversion |
+| Authentication and web security | PCM conversion |
 | Station registry | A/B deck state |
 | SQLite persistence | Cue, seek, fade and transition timing |
 | Queue planning | Real-time mixing |
@@ -237,37 +273,91 @@ The Python side remains the owner of business logic. The native side remains the
 
 ---
 
+## Deployment architecture
+
+v6042 supports three web deployment arrangements. Two are intended as normal operating modes; direct TLS is available as an alternative.
+
+### Trusted LAN
+
+```text
+Trusted LAN browser
+        |
+        | HTTP :15000
+        v
+0.0.0.0:15000
+        |
+        v
+Web Broadcaster v6042 / Cheroot
+```
+
+This is the default generated `start.sh` mode. It requires no nginx, public domain, Certbot or TLS certificate. Because traffic is plain HTTP, use it only on a trusted private network and do not forward TCP 15000 from the Internet.
+
+### Public Internet through nginx — recommended
+
+```text
+Internet
+   |
+   | HTTPS :443
+   v
+nginx on the same host
+   | TLS termination
+   | reverse proxy
+   v
+127.0.0.1:15000
+   |
+   v
+Web Broadcaster v6042 / Cheroot
+```
+
+In this mode nginx is the only public HTTP/HTTPS endpoint. Web Broadcaster listens only on loopback. TCP 15000 must not be publicly forwarded.
+
+The package contains:
+
+```text
+docs/DEPLOYMENT_GUIDE.md
+docs/NGINX_PUBLIC_HTTPS.md
+docs/nginx_web_broadcaster.conf.example
+```
+
+The nginx guide documents DNS, TCP 80/443, Certbot, Let's Encrypt, forwarded headers, Server-Sent Events buffering, certificate renewal, upgrades and validation.
+
+### Direct Cheroot TLS — supported alternative
+
+Web Broadcaster can serve HTTPS directly through Cheroot when `HTTPS_MODE="ON"` and valid certificate/private-key files are configured. For an always-on public deployment, nginx on the same host remains the preferred documented architecture.
+
+---
+
 ## Audio path
 
 ```text
 local file / HTTP / HTTPS / HLS
-        │
-        ▼
+        |
+        v
 libavformat demuxer
-        │
-        ▼
+        |
+        v
 libavcodec audio decoder
-        │
-        ▼
+        |
+        v
 libswresample
 44.1 kHz / stereo / signed 16-bit little-endian PCM
-        │
-        ▼
+        |
+        v
 native A/B deck buffers
-        │
-        ▼
+        |
+        v
 cue / seek / fade / crossfade / mixer
-        │
+        |
         ├── dry PCM
-        │
+        |
         └── SoundSolution-processed PCM
-                │
-                ▼
+                |
+                v
 shared multi-output encoder
         ├── libmp3lame
         └── libfdk_aac
-                │
-                ▼
+                |
+                v
 per-output FIFO and native Icecast connection
 ```
 
@@ -295,7 +385,7 @@ bin/web_broadcaster
 bin/web_broadcaster_engine
 ```
 
-`bin/web_broadcaster` is the PyInstaller-packaged Python/Flask application. It automatically starts, verifies, monitors and stops `bin/web_broadcaster_engine`.
+`bin/web_broadcaster` is the PyInstaller-packaged Python/Flask application served by Cheroot. It automatically starts, verifies, monitors and stops `bin/web_broadcaster_engine`.
 
 The live station path does **not** start:
 
@@ -340,7 +430,7 @@ The official build script intentionally does not provide:
 - Windows support;
 - macOS support.
 
-Each package is built and tested natively on its target architecture.
+Each final package is built and tested natively on its target architecture.
 
 ---
 
@@ -348,21 +438,22 @@ Each package is built and tested natively on its target architecture.
 
 | Component | Version / mode |
 |---|---|
-| Web Broadcaster | `6024` |
-| Native audio daemon | `6024` |
+| Web Broadcaster | `6042` |
+| Native audio daemon | `6042` |
 | FFmpeg/libav | `7.1.5` |
 | FFmpeg runtime ID | `7.1.5-for-web-broadcaster-r13` |
 | AMD64 SoundSolution | `6.1.0`, `native-binary64-fast` |
 | Raspberry Pi 5 SoundSolution | `6.0.0`, `native-double`, structured-process |
-| Flask | `3.0.3` |
-| Werkzeug | `3.0.3` |
+| Flask | `3.1.3` |
+| Werkzeug | `3.1.8` |
 | python-dotenv | `1.0.1` |
-| Flask-Limiter | `3.6.0` |
+| Flask-Limiter | `4.1.1` |
+| Cheroot | `11.1.2` |
 | Mutagen | `1.47.0` |
 | PyInstaller | `6.21.0` |
 | pytest | `8.3.5` |
 
-Python packages used during the official build are pinned by the build script.
+The build script pins the Python packages used by the official build.
 
 ---
 
@@ -376,6 +467,7 @@ web-broadcaster/
 ├── requirements.txt
 ├── pytest.ini
 ├── version.txt
+├── README.md
 │
 ├── audio_engine/
 │   ├── base.py
@@ -428,6 +520,11 @@ web-broadcaster/
 ├── script/
 │   └── time.wbs
 │
+├── docs/
+│   ├── DEPLOYMENT_GUIDE.md
+│   ├── NGINX_PUBLIC_HTTPS.md
+│   └── nginx_web_broadcaster.conf.example
+│
 └── tests/
 ```
 
@@ -440,6 +537,7 @@ web-broadcaster/
 - `station/` — station lifecycle orchestration.
 - `storage/` — queue, history and runtime persistence repository.
 - `html/` — all templates and static assets. There are no legacy top-level `templates/` or `static/` directories.
+- `docs/` — deployment-mode, nginx, HTTPS and Certbot documentation.
 - `tests/` — Python and native integration/regression tests.
 - `version.txt` — complete chronological project history. New releases must be appended; old entries must not be deleted.
 
@@ -452,9 +550,11 @@ The source repository should not contain:
 - generated native binaries;
 - PyInstaller output;
 - local databases;
+- setup/session secret files;
 - logs;
 - media libraries;
 - credentials or `.env` files;
+- TLS private keys;
 - final `.tar.gz` packages;
 - complete buildkit ZIP files.
 
@@ -475,38 +575,41 @@ The Git repository is the source of truth for:
 - HTML/CSS/JavaScript assets;
 - tests;
 - project documentation;
+- `README.md`;
 - `version.txt`.
 
 ### Release assets
 
-The Release for a Web Broadcaster version should contain:
+The v6042 release artifacts currently have these identities:
+
+| File | SHA-256 |
+|---|---|
+| `Web_Broadcaster_v6042.zip` | `5811aaf71e9f2a06a23bbed86a2821741454df4ad098be9e090b110b9abb5171` |
+| `Web_Broadcaster_v6042_buildkit.zip` | `19b189e886e40862274bd0a44469b8662f81c52cfee8bd6b1d5f57e6596b91be` |
+| `build_v6042_linux.sh` | `0dd2759c6e0d825314928a599114169f59ed0bfb066912fc16c4204092a69441` |
+
+The build script is also included inside the complete buildkit. Publishing it separately is convenient for inspection, but the version-matched buildkit remains the authoritative build input.
+
+After successful native builds, a Release may also contain:
 
 ```text
-Web_Broadcaster_v6024_buildkit.zip
-Web_Broadcaster_v6024_buildkit.zip.sha256
-Web_Broadcaster_v6024.zip
-Web_Broadcaster_v6024.zip.sha256
+Web_Broadcaster_Linux_v6042_amd64.tar.gz
+Web_Broadcaster_Linux_v6042_amd64.tar.gz.sha256
+Web_Broadcaster_Linux_v6042_arm64_rpi5.tar.gz
+Web_Broadcaster_Linux_v6042_arm64_rpi5.tar.gz.sha256
 ```
 
-After successful native builds, the Release may also contain:
+The complete buildkit contains the fixed FFmpeg and SoundSolution packages required for native dependency staging. The Python build stage still requires network access to install the pinned Python packages unless a local Python package mirror/cache provides them.
+
+### Current v6042 buildkit identity
 
 ```text
-Web_Broadcaster_Linux_v6024_amd64.tar.gz
-Web_Broadcaster_Linux_v6024_amd64.tar.gz.sha256
-Web_Broadcaster_Linux_v6024_arm64_rpi5.tar.gz
-Web_Broadcaster_Linux_v6024_arm64_rpi5.tar.gz.sha256
+File:   Web_Broadcaster_v6042_buildkit.zip
+SHA256: 19b189e886e40862274bd0a44469b8662f81c52cfee8bd6b1d5f57e6596b91be
+Revision: build_v6042_linux-r1-id3-metadata-noise-class-filter
 ```
 
-The complete buildkit contains the fixed FFmpeg and SoundSolution packages required for offline native dependency staging. The Python build stage still requires network access to install the pinned Python packages unless a local Python package mirror/cache is provided.
-
-### Current v6024 buildkit identity
-
-```text
-File:   Web_Broadcaster_v6024_buildkit.zip
-SHA256: 9a485925512d35904f351a1e0c60e8368d2723d8f756f1ea733352dd5a2caa25
-```
-
-Do not replace a published asset under the same version and filename. Publish a new Web Broadcaster version for any changed artifact.
+Do not replace a published asset under the same version and filename. Publish a new Web Broadcaster version for any changed released artifact.
 
 ---
 
@@ -519,28 +622,33 @@ The Release buildkit is the authoritative and recommended build method.
 Download:
 
 ```text
-Web_Broadcaster_v6024_buildkit.zip
-Web_Broadcaster_v6024_buildkit.zip.sha256
+Web_Broadcaster_v6042_buildkit.zip
 ```
 
-Verify:
+Verify against the published SHA-256:
 
 ```bash
-sha256sum -c Web_Broadcaster_v6024_buildkit.zip.sha256
+sha256sum Web_Broadcaster_v6042_buildkit.zip
+```
+
+Expected:
+
+```text
+19b189e886e40862274bd0a44469b8662f81c52cfee8bd6b1d5f57e6596b91be
 ```
 
 ### 2. Extract
 
 ```bash
-unzip Web_Broadcaster_v6024_buildkit.zip
-cd Web_Broadcaster_v6024_buildkit
+unzip Web_Broadcaster_v6042_buildkit.zip
+cd Web_Broadcaster_v6042_buildkit
 ```
 
 ### 3. Start the native build
 
 ```bash
-chmod +x build_v6024_linux.sh
-./build_v6024_linux.sh
+chmod +x build_v6042_linux.sh
+./build_v6042_linux.sh
 ```
 
 The same command is used on Debian 12 AMD64 and Raspberry Pi 5. The script detects the native architecture and selects the correct dependency set automatically.
@@ -548,14 +656,16 @@ The same command is used on Debian 12 AMD64 and Raspberry Pi 5. The script detec
 ### Optional source-test skip
 
 ```bash
-RUN_SOURCE_TESTS=0 ./build_v6024_linux.sh
+RUN_SOURCE_TESTS=0 ./build_v6042_linux.sh
 ```
 
-Skipping tests is intended only for diagnosis. Official Release packages should be built with the default:
+Skipping tests is intended only for diagnosis. Normal and release builds should keep the default:
 
 ```text
 RUN_SOURCE_TESTS=1
 ```
+
+The complete source regression suite is deliberately enabled by default.
 
 ---
 
@@ -579,7 +689,7 @@ sudo apt install -y \
   ca-certificates
 ```
 
-The script also expects standard commands such as `ldd`, `sha256sum`, `find`, `sort` and `install`, which are part of a normal Debian installation.
+The script also expects standard commands such as `ldd`, `sha256sum`, `find`, `sort`, `install` and `readelf`, which are part of a normal Debian build environment.
 
 ### Raspberry Pi 5
 
@@ -613,7 +723,7 @@ Node.js is not a build dependency. When available, an additional JavaScript exec
 
 ## Build process
 
-The build script performs the following stages.
+The v6042 build script performs the following stages.
 
 1. **Host validation**
    - verifies Linux;
@@ -625,9 +735,9 @@ The build script performs the following stages.
    - refuses to continue if an included source or dependency archive has changed.
 
 3. **Source extraction**
-   - extracts `Web_Broadcaster_v6024.zip`;
+   - extracts `Web_Broadcaster_v6042.zip`;
    - verifies the architecture-neutral source layout;
-   - confirms `APP_VERSION=6024` and native daemon version `6024`.
+   - confirms `APP_VERSION=6042` and native daemon version `6042`.
 
 4. **Dependency selection**
    - selects the matching FFmpeg SDK/runtime;
@@ -636,7 +746,7 @@ The build script performs the following stages.
 
 5. **Temporary dependency staging**
    - stages FFmpeg headers under `native_engine/ffmpeg_sdk/include/`;
-   - stages the diagnostic FFmpeg executable as `bin/ffmpeg`;
+   - stages the diagnostic FFmpeg executable as `bin/ffmpeg` for tests/build checks;
    - stages private FFmpeg shared libraries under `lib/`;
    - stages `libsoundsolution.so.2` and `ss18.dat` under `bin/soundsolution/`;
    - stages the matching SoundSolution API header.
@@ -658,12 +768,14 @@ The build script performs the following stages.
 
 9. **Python build environment**
    - creates `build_work/venv`;
-   - installs pinned Python/PyInstaller/test dependencies;
+   - installs pinned PyInstaller/web/test dependencies;
    - verifies installed versions.
 
 10. **Regression tests**
     - runs the complete source regression suite by default;
-    - runs the optional JavaScript test when Node.js is available.
+    - shows pytest progress live;
+    - writes the complete output to `build_work/source-regression.log`;
+    - runs the optional JavaScript execution test when Node.js is available.
 
 11. **Final flat-bin preparation**
     - patches the temporary build tree for the packaged application layout;
@@ -676,25 +788,28 @@ The build script performs the following stages.
 
 13. **Package assembly**
     - copies the application, native daemon and private libraries;
-    - copies `html/` and `script/`;
+    - copies `html/`, `script/` and `docs/`;
     - generates `start.sh` and package `README.txt`.
 
 14. **Package cleanup**
     - removes build-only files;
+    - removes diagnostic FFmpeg/ffprobe command-line binaries from the final application;
     - materializes all symlinks as regular files;
     - refuses to package any remaining symlink.
 
 15. **Final verification**
     - verifies the exact allowed root and `bin/` entries;
+    - checks required deployment documentation;
     - checks file modes;
     - verifies SONAME and RPATH;
     - runs `ldd` and confirms private FFmpeg/SoundSolution resolution;
     - runs a packaged native-daemon smoke test;
-    - verifies the `start.sh` contract.
+    - verifies the complete `start.sh` security/deployment contract.
 
 16. **Archive creation**
     - creates the final `.tar.gz`;
     - verifies that the archive contains no symlinks;
+    - verifies required deployment documentation in the archive;
     - writes a `.sha256` file.
 
 ---
@@ -704,21 +819,21 @@ The build script performs the following stages.
 ### AMD64
 
 ```text
-Web_Broadcaster_Linux_v6024_amd64.tar.gz
-Web_Broadcaster_Linux_v6024_amd64.tar.gz.sha256
+Web_Broadcaster_Linux_v6042_amd64.tar.gz
+Web_Broadcaster_Linux_v6042_amd64.tar.gz.sha256
 ```
 
 ### Raspberry Pi 5
 
 ```text
-Web_Broadcaster_Linux_v6024_arm64_rpi5.tar.gz
-Web_Broadcaster_Linux_v6024_arm64_rpi5.tar.gz.sha256
+Web_Broadcaster_Linux_v6042_arm64_rpi5.tar.gz
+Web_Broadcaster_Linux_v6042_arm64_rpi5.tar.gz.sha256
 ```
 
 The top-level directory inside either archive is:
 
 ```text
-Web_Broadcaster_Linux_v6024/
+Web_Broadcaster_Linux_v6042/
 ```
 
 The architecture appears in the archive filename, while the extracted application directory remains consistent.
@@ -727,10 +842,10 @@ The architecture appears in the archive filename, while the extracted applicatio
 
 ## Final package layout
 
-The final v6024 package deliberately preserves the v6023 flat `bin/` contract.
+The final v6042 package preserves the established flat `bin/` runtime contract and includes the deployment documentation introduced in the public-HTTPS release line.
 
 ```text
-Web_Broadcaster_Linux_v6024/
+Web_Broadcaster_Linux_v6042/
 ├── start.sh
 ├── README.txt
 ├── bin/
@@ -755,7 +870,11 @@ Web_Broadcaster_Linux_v6024/
 │   ├── Layout1_default.pos
 │   ├── Layout2_default.pos
 │   └── static/
-└── script/
+├── script/
+└── docs/
+    ├── DEPLOYMENT_GUIDE.md
+    ├── NGINX_PUBLIC_HTTPS.md
+    └── nginx_web_broadcaster.conf.example
 ```
 
 ### Flat `bin/` rule
@@ -800,48 +919,49 @@ RPATH = $ORIGIN
 
 ## Installing and starting Web Broadcaster
 
-### 1. Verify the package
+### 1. Verify the built package
+
+AMD64 example:
 
 ```bash
-sha256sum -c Web_Broadcaster_Linux_v6024_amd64.tar.gz.sha256
+sha256sum -c Web_Broadcaster_Linux_v6042_amd64.tar.gz.sha256
 ```
 
-or:
+Raspberry Pi 5 example:
 
 ```bash
-sha256sum -c Web_Broadcaster_Linux_v6024_arm64_rpi5.tar.gz.sha256
+sha256sum -c Web_Broadcaster_Linux_v6042_arm64_rpi5.tar.gz.sha256
 ```
 
 ### 2. Extract
 
 ```bash
-tar -xzf Web_Broadcaster_Linux_v6024_amd64.tar.gz
-cd Web_Broadcaster_Linux_v6024
+tar -xzf Web_Broadcaster_Linux_v6042_amd64.tar.gz
+cd Web_Broadcaster_Linux_v6042
 ```
 
 Use the ARM64 archive name on Raspberry Pi 5.
 
-### 3. Review the two user settings
+### 3. Review `start.sh`
 
-At the beginning of `start.sh`:
+v6042 exposes the deployment/security settings at the beginning of `start.sh`:
 
 ```bash
 PORT="15000"
 DEBUG_MODE="OFF"
+
+PUBLIC_INTERNET_MODE="OFF"
+BIND_HOST="0.0.0.0"
+TRUSTED_HOSTS=""
+
+HTTPS_MODE="OFF"
+TLS_CERT_FILE=""
+TLS_KEY_FILE=""
+
+PROXY_COUNT="0"
 ```
 
-Valid port range:
-
-```text
-1–65535
-```
-
-Valid debug values:
-
-```text
-OFF
-ON
-```
+The generated defaults are for a trusted private LAN.
 
 ### 4. Start
 
@@ -849,15 +969,15 @@ ON
 ./start.sh
 ```
 
-Expected normal startup output:
+Expected trusted-LAN startup output includes:
 
 ```text
-Web Broadcaster is starting on port 15000.
+Web Broadcaster v6042 is starting with Cheroot on 0.0.0.0:15000.
 
 Open http://localhost:15000 in your browser.
 ```
 
-Open the displayed address in a browser.
+In the recommended nginx mode, the listener line instead shows `127.0.0.1:15000`.
 
 ### 5. Stop
 
@@ -865,22 +985,109 @@ Use `Ctrl+C` in the terminal that runs `start.sh`, or stop the supervising servi
 
 ---
 
+## Deployment modes
+
+Read `docs/DEPLOYMENT_GUIDE.md` before changing network exposure. For public nginx deployment, also read `docs/NGINX_PUBLIC_HTTPS.md`.
+
+### Mode A — trusted LAN only
+
+Use:
+
+```bash
+PORT="15000"
+DEBUG_MODE="OFF"
+
+PUBLIC_INTERNET_MODE="OFF"
+BIND_HOST="0.0.0.0"
+TRUSTED_HOSTS=""
+
+HTTPS_MODE="OFF"
+TLS_CERT_FILE=""
+TLS_KEY_FILE=""
+
+PROXY_COUNT="0"
+```
+
+This exposes plain HTTP to the host's LAN interfaces. Do **not** create an Internet/NAT port-forward for TCP 15000.
+
+### Mode B — public Internet through local nginx — recommended
+
+Use:
+
+```bash
+PORT="15000"
+DEBUG_MODE="OFF"
+
+PUBLIC_INTERNET_MODE="ON"
+BIND_HOST="127.0.0.1"
+TRUSTED_HOSTS="radio.example.com"
+
+HTTPS_MODE="OFF"
+TLS_CERT_FILE=""
+TLS_KEY_FILE=""
+
+PROXY_COUNT="1"
+```
+
+Replace `radio.example.com` with the real public hostname.
+
+In this mode:
+
+- nginx listens publicly on TCP 80/443;
+- nginx terminates HTTPS;
+- Web Broadcaster listens only on `127.0.0.1:15000`;
+- TCP 15000 is not publicly forwarded;
+- `PROXY_COUNT=1` tells Flask to trust exactly one local reverse proxy;
+- secure session cookies and HTTPS-aware URL handling are enabled by the proxy configuration.
+
+The launcher rejects `PROXY_COUNT>0` unless the Web Broadcaster bind address is loopback.
+
+### Mode C — direct Cheroot HTTPS
+
+Direct TLS is supported with:
+
+```bash
+PUBLIC_INTERNET_MODE="ON"
+BIND_HOST="0.0.0.0"
+TRUSTED_HOSTS="radio.example.com"
+HTTPS_MODE="ON"
+TLS_CERT_FILE="/absolute/path/fullchain.pem"
+TLS_KEY_FILE="/absolute/path/privkey.pem"
+PROXY_COUNT="0"
+```
+
+The certificate and private key must exist and be readable. TLS 1.2 is the minimum protocol configured by the application when the runtime supports explicit minimum-version control.
+
+For an always-on public service, the documented nginx deployment remains preferred.
+
+---
+
 ## First-run setup
 
-On a fresh database, Web Broadcaster presents its initial setup flow.
+On a fresh database, Web Broadcaster protects first-user creation with a one-time setup token.
 
-Typical setup order:
+At first launch the token is:
 
-1. Create the first user account.
-2. Create the first station.
-3. Set the station name.
-4. Set the base music directory.
-5. Configure station playback and DSP settings.
-6. Add or scan media into categories.
-7. Configure AutoDJ rotation if required.
-8. Create one or more Icecast encoder outputs.
-9. Add queue items or allow AutoDJ to fill the queue.
-10. Start the station audio engine and selected output(s).
+- printed to the **local server console**;
+- written to `db/.setup_token`;
+- required by the Setup page;
+- removed after the first user is created successfully.
+
+The setup-token file is created with private owner permissions where supported.
+
+Typical initial application setup order:
+
+1. Start Web Broadcaster and read the one-time setup token from the local console.
+2. Create the first user account.
+3. Create the first station.
+4. Set the station name.
+5. Set the base music directory.
+6. Configure station playback and DSP settings.
+7. Add or scan media into categories.
+8. Configure AutoDJ rotation if required.
+9. Create one or more Icecast encoder outputs.
+10. Add queue items or allow AutoDJ to fill the queue.
+11. Start the station audio engine and selected output(s).
 
 The media library itself is not copied into the Web Broadcaster package. The configured base music directory must be readable by the user that runs Web Broadcaster.
 
@@ -890,16 +1097,14 @@ The media library itself is not copied into the Web Broadcaster package. The con
 
 ### Port
 
-The packaged launch contract intentionally exposes only one port setting in `start.sh`:
-
 ```bash
 PORT="15000"
 ```
 
-The application listens on:
+Valid range:
 
 ```text
-0.0.0.0:<PORT>
+1-65535
 ```
 
 ### Debug mode
@@ -908,7 +1113,60 @@ The application listens on:
 DEBUG_MODE="OFF"
 ```
 
+Valid values:
+
+```text
+OFF
+ON
+```
+
 Normal operation should use `OFF`.
+
+### Public Internet policy
+
+```bash
+PUBLIC_INTERNET_MODE="OFF"
+```
+
+When set to `ON`, the launcher requires trusted hosts and refuses plain HTTP unless either direct TLS or an explicit trusted reverse proxy is configured.
+
+### Bind address
+
+```bash
+BIND_HOST="0.0.0.0"
+```
+
+Trusted LAN mode normally uses `0.0.0.0`. The recommended local-nginx reverse-proxy mode must use `127.0.0.1` (or another accepted loopback form).
+
+### Trusted hosts
+
+```bash
+TRUSTED_HOSTS=""
+```
+
+Public HTTPS/proxy mode requires at least one allowed Host value, for example:
+
+```bash
+TRUSTED_HOSTS="radio.example.com"
+```
+
+### Direct TLS
+
+```bash
+HTTPS_MODE="OFF"
+TLS_CERT_FILE=""
+TLS_KEY_FILE=""
+```
+
+These are used only when Cheroot itself terminates TLS.
+
+### Reverse-proxy count
+
+```bash
+PROXY_COUNT="0"
+```
+
+Use `1` only for the documented single local nginx proxy. The allowed range is `0` to `4`, but the value must equal the exact number of explicitly trusted proxies in front of the application.
 
 ### Station settings
 
@@ -940,6 +1198,88 @@ The application resolves legacy stored paths to the packaged native configuratio
 
 ---
 
+## Web security model
+
+v6042 includes application-level controls intended to support safe HTTPS deployment. HTTPS is still required for public network exposure.
+
+### Authentication
+
+- Authentication is deny-by-default.
+- Only login, first-run setup and static assets are intentionally public.
+- API requests without an authenticated session return an unauthorized response instead of silently bypassing login.
+- Passwords are stored as one-way Werkzeug password hashes, not plaintext user passwords.
+- New and changed passwords must be **12 to 256 characters** in v6042.
+- Login errors deliberately use a generic invalid-credentials message.
+
+### Session protection
+
+- The session cookie is named `wb_session`.
+- `HttpOnly` is enabled.
+- `SameSite=Lax` is enabled.
+- `Secure` is enabled in direct-HTTPS or trusted-proxy mode.
+- Permanent session lifetime is eight hours with rolling refresh.
+- A cryptographically random Flask session-signing secret is generated automatically when no explicit secret is supplied.
+- The generated secret is stored in `db/.session_secret` with private owner permissions where supported.
+
+Preserve `db/.session_secret` during upgrades. Deleting it invalidates existing browser sessions and causes a new secret to be created on the next start.
+
+### CSRF protection
+
+Every state-changing HTTP method is protected by a session-bound CSRF token. Studio fetch requests send the token through `X-CSRF-Token`; forms use the same session token. Logout is a POST operation rather than an unprotected GET action.
+
+### Request and form limits
+
+The application configures:
+
+```text
+Maximum request body: 4 MiB
+Maximum in-memory form data: 256 KiB
+Maximum form parts: 100
+```
+
+The supplied nginx configuration keeps its edge body limit aligned with the application.
+
+### Rate limiting
+
+Flask-Limiter is enabled with:
+
+- global ceiling: `600 per minute`;
+- meta limit: `20 per hour`;
+- login POST: `5 per 5 minutes; 20 per hour`;
+- initial setup POST: `3 per 5 minutes; 10 per hour`;
+- user-creation endpoint: `3 per 5 minutes`.
+
+Reverse-proxy mode relies on the configured trusted proxy count so the application receives the correct client address from the local nginx proxy.
+
+### Host and proxy validation
+
+- Flask `TRUSTED_HOSTS` validation is supported and required for public HTTPS/proxy operation.
+- v6038+ preserves Flask routing errors correctly, so an invalid Host returns the intended routing error rather than being converted into an authentication redirect failure.
+- Reverse-proxy mode is accepted only with a loopback Web Broadcaster listener.
+- Public-Internet mode refuses plain HTTP without direct TLS or an explicitly trusted reverse proxy.
+
+### Security response headers
+
+v6042 sets, among others:
+
+- `X-Content-Type-Options: nosniff`;
+- `X-Frame-Options: DENY`;
+- `Referrer-Policy: no-referrer`;
+- restrictive `Permissions-Policy`;
+- `Cross-Origin-Opener-Policy: same-origin`;
+- `Cross-Origin-Resource-Policy: same-origin`;
+- Content Security Policy;
+- `Strict-Transport-Security` on HTTPS-aware requests;
+- `Cache-Control: no-store` for non-static responses.
+
+The current CSP retains `'unsafe-inline'` for scripts/styles because the existing UI still contains inline content. It is therefore not equivalent to a nonce/hash-only CSP.
+
+### Current authentication boundary
+
+v6042 does **not** implement multi-factor authentication. For public deployment use a long, strong, unique password and protect the account credentials accordingly.
+
+---
+
 ## Logging and diagnostics
 
 ### Normal mode
@@ -957,7 +1297,24 @@ logs/audio_engine_protocol.jsonl
 logs/native_engine.log
 ```
 
-Routine Python/Werkzeug warning traffic and native-daemon stdout are suppressed. Genuine Python/Werkzeug `ERROR`/`CRITICAL` records and native-daemon/libav stderr errors remain visible on the console.
+Routine Python/Werkzeug/Cheroot warning traffic and native-daemon stdout are suppressed. Genuine Python, native-daemon and libav errors remain visible on the console.
+
+### Malformed ID3 metadata noise filtering
+
+v6042 deliberately suppresses a narrow class of known harmless FFmpeg 7.1.5 ID3 parser diagnostics that can occur while scanning malformed MP3 metadata. This includes the exact BOM/comment/lyrics parser messages and `Error reading frame <ID>, skipped` only when `<ID>` has the shape of a valid 3/4-character uppercase-alphanumeric ID3 frame identifier.
+
+Examples covered by the regression tests include malformed:
+
+```text
+COMM
+TENC
+TCOP
+TOPE
+```
+
+The same filtering is applied at the native libav callback and at the inherited process-console path so known metadata-only noise does not leak to the terminal, systemd output or Settings Console.
+
+This filter does **not** intentionally suppress generic container, decoder, encoder, network or I/O errors.
 
 ### Debug mode
 
@@ -1014,6 +1371,18 @@ db/web-broadcaster.db
 
 Station-specific databases are also stored under `db/`.
 
+The same directory also contains security state such as:
+
+```text
+db/.session_secret
+```
+
+and, only until the first administrator is created:
+
+```text
+db/.setup_token
+```
+
 ### Temporary runtime directory
 
 ```text
@@ -1035,12 +1404,13 @@ This directory is used when debug logging is enabled.
 For a consistent manual backup:
 
 1. Stop Web Broadcaster.
-2. Copy the complete `db/` directory.
+2. Copy the complete `db/` directory, including hidden files such as `.session_secret`.
 3. Back up any custom `.dat`, script or layout files stored outside the package defaults.
 4. Back up the external music library separately.
 5. Record the exact Web Broadcaster package version and archive SHA-256.
+6. If using public nginx HTTPS, back up or document the nginx site configuration separately. Certbot/Let's Encrypt state lives outside the Web Broadcaster package.
 
-Do not commit runtime databases or credentials to Git.
+Do not commit runtime databases, setup/session secrets, Icecast credentials or TLS private keys to Git.
 
 ---
 
@@ -1053,6 +1423,10 @@ Major test areas include:
 - architecture and package contracts;
 - source version history;
 - database bootstrap and current schema;
+- Internet security and protected-route behavior;
+- Cheroot/server contract;
+- trusted-host routing;
+- LAN and nginx deployment documentation;
 - station lifecycle;
 - queue and history persistence;
 - AutoDJ repeat rules and rotation;
@@ -1071,29 +1445,34 @@ Major test areas include:
 - client disconnect handling;
 - final HTML layout;
 - bundled FFmpeg runtime behavior;
-- final package layout and private-library resolution.
+- malformed-ID3 console filtering using real FFmpeg 7.1.5 parser paths;
+- final package layout, documentation presence and private-library resolution.
 
 ### Authoritative test command
 
 The official test run occurs inside the buildkit:
 
 ```bash
-./build_v6024_linux.sh
+./build_v6042_linux.sh
 ```
 
 The build script stages the architecture-matched FFmpeg and SoundSolution dependencies before running:
 
 ```bash
-python -m pytest -q
+python -m pytest -q --tb=short
+```
+
+with live output also written to:
+
+```text
+build_work/source-regression.log
 ```
 
 Running the full test suite directly from a clean Git checkout is not equivalent because the source repository intentionally does not contain the staged private native dependencies.
 
-### v6024 r4 probe test correction
+### Why the buildkit is authoritative
 
-The r4 buildkit makes the one-deck audio-probe regression deterministic on loaded Debian 12 build hosts. A terminal probe event is accepted only after the exact active `native_audio_probe_started` identity has been observed, preventing a fast preload-generation EOF from waking the active-playback assertion prematurely.
-
-This change affects regression synchronization only; it does not change runtime audio or DSP code.
+Several native regression tests require the exact packaged FFmpeg headers/libraries, architecture-specific SoundSolution runtime and generated native executable. The buildkit stages those dependencies first and then runs the suite in the environment that matches the release build.
 
 ---
 
@@ -1108,6 +1487,18 @@ sha256sum -c SHA256SUMS.txt
 ```
 
 Any changed or missing included artifact causes an immediate build failure.
+
+### Source/build-script identity
+
+The current v6042 buildkit manifest includes:
+
+```text
+Web_Broadcaster_v6042.zip
+  5811aaf71e9f2a06a23bbed86a2821741454df4ad098be9e090b110b9abb5171
+
+build_v6042_linux.sh
+  0dd2759c6e0d825314928a599114169f59ed0bfb066912fc16c4204092a69441
+```
 
 ### Private-library verification
 
@@ -1124,10 +1515,9 @@ The builder verifies:
 
 ### Raspberry Pi 5 SoundSolution protection
 
-The validated Raspberry Pi 5 SoundSolution archive is:
+The validated Raspberry Pi 5 SoundSolution runtime hash is:
 
 ```text
-soundsolution_v6.0.0_rPi5.tar.gz
 SHA256: 84455ef8a15121b88835f28205a4bb325f19d80bd649ebf4ebffff4fe973f4d4
 ```
 
@@ -1138,7 +1528,6 @@ During a normal Web Broadcaster build it is:
 - not patched;
 - not relinked;
 - not processed with `objcopy`;
-- not repacked as a new SoundSolution archive;
 - not modified in place.
 
 The required library and `ss18.dat` are copied as regular files and verified before and after package assembly.
@@ -1159,15 +1548,18 @@ For a new release, update at minimum:
 app.py
 native_engine/include/engine.h
 version.txt
+build script
+release documentation
 ```
 
-The following values must match:
+The following values must agree:
 
 ```text
 APP_VERSION
 WB_NATIVE_DAEMON_VERSION
-release archive filenames
+source/archive filenames
 build script EXPECTED_APP_VERSION
+current-version regression assertions
 ```
 
 ### 2. Append `version.txt`
@@ -1177,38 +1569,47 @@ Do not rewrite or truncate the existing history. Append a new chronological entr
 - behavior changes;
 - architecture changes;
 - dependency changes;
+- security/deployment changes;
 - test/build changes;
 - compatibility decisions;
 - the final version update.
 
-### 3. Run tests and native builds
+### 3. Run native builds
 
-A release is complete only after successful native builds on:
+A final binary release should be built and validated natively on:
 
 - Debian 12 AMD64;
 - Raspberry Pi 5 AArch64.
 
-### 4. Commit and tag
+The normal build keeps `RUN_SOURCE_TESTS=1`.
 
-Example:
+### 4. Commit the source and documentation
 
-```bash
-git add .
-git commit -m "Release Web Broadcaster v6024"
-git tag -a v6024 -m "Web Broadcaster v6024"
-git push origin main
-git push origin v6024
+The repository `main` branch should contain the unpacked current source, tests and documentation. `README.md` must describe the same release as `APP_VERSION` and `version.txt`.
+
+When using the GitHub web interface, upload/replace the current source files, commit them to `main`, then create a version tag/release from the updated `main` state.
+
+### 5. Tag the release
+
+Use the immutable version tag:
+
+```text
+v6042
 ```
 
-### 5. Publish Release assets
+Release title:
 
-Attach the source ZIP, complete buildkit and checksums. Add the finished native application packages after successful builds.
+```text
+Web Broadcaster v6042
+```
 
-### 6. Never move a published tag
+### 6. Publish Release assets
 
-Do not modify or force-move `v6024`. A correction must become a new application version, for example `v6025`, when it changes released source or output artifacts.
+Attach the architecture-neutral source ZIP, complete buildkit and their published checksums/identities. Add the finished native Linux packages after successful native builds.
 
-Buildkit-only revisions used during pre-release validation should be finalized before the immutable application Release is published.
+### 7. Never move a published tag
+
+Do not modify or force-move `v6042` after publication. A correction that changes released source or artifacts must become a new Web Broadcaster version.
 
 ---
 
@@ -1230,16 +1631,18 @@ Recommended rules:
 4. Preserve the current database schema policy unless a release explicitly changes it.
 5. Preserve the flat final `bin/` package contract unless a release explicitly redesigns packaging.
 6. Do not replace private FFmpeg or SoundSolution binaries casually.
-7. Test AMD64 and Raspberry Pi 5 before tagging a release.
-8. Append `version.txt` for every released version.
+7. Keep public-deployment documentation synchronized with `start.sh` and application security behavior.
+8. Test AMD64 and Raspberry Pi 5 before publishing final native packages.
+9. Append `version.txt` for every released version.
+10. Keep the complete source regression suite enabled by default in the normal build.
 
 Example commit messages:
 
 ```text
-Fix active native audio probe regression synchronization
-Preserve private FFmpeg library resolution in flat package
-Add station-scoped AutoDJ lifecycle guard
-Release Web Broadcaster v6025
+Harden trusted-host routing for nginx deployment
+Preserve embedded ID3 artist/title metadata priority
+Generalize malformed ID3 console-noise filtering
+Release Web Broadcaster v6042
 ```
 
 ### Suggested `.gitignore`
@@ -1262,14 +1665,18 @@ dist/
 *.a
 
 # Runtime data
-db/
-temp/
-logs/
+/db/
+/temp/
+/logs/
 *.db
 *.sqlite
 *.sqlite3
 .env
 .env.*
+
+# Runtime/security secrets
+**/.session_secret
+**/.setup_token
 
 # Local dependency/buildkit material
 ffmpeg_build/
@@ -1289,8 +1696,6 @@ Web_Broadcaster_*.tar.gz
 *~
 ```
 
-Remove the leading spaces before `db/`, `temp/` and `logs/` when copying this example into the actual `.gitignore` file; they are shown separated here only to emphasize runtime directories.
-
 ### Suggested `.gitattributes`
 
 ```gitattributes
@@ -1301,6 +1706,7 @@ Remove the leading spaces before `db/`, `temp/` and `logs/` when copying this ex
 *.html text eol=lf
 *.css text eol=lf
 *.js text eol=lf
+*.md text eol=lf
 Makefile text eol=lf
 
 *.dat binary
@@ -1309,7 +1715,7 @@ Makefile text eol=lf
 *.zip binary
 ```
 
-Ensure executable scripts retain their Git executable bit.
+Ensure executable scripts retain their Git executable bit where the repository tooling supports it.
 
 ---
 
@@ -1326,7 +1732,7 @@ ERROR: Buildkit SHA-256 verification failed.
 Actions:
 
 1. Do not edit files inside the extracted buildkit.
-2. Re-download the exact Release assets.
+2. Re-download the exact Release asset.
 3. Verify the outer buildkit ZIP checksum.
 4. Extract into a clean directory.
 5. Confirm no sync/antivirus tool modified included scripts or archives.
@@ -1336,7 +1742,7 @@ Actions:
 Install the missing Debian package. Common requirements are covered by:
 
 ```bash
-sudo apt install -y build-essential python3 python3-venv python3-pip unzip tar binutils file
+sudo apt install -y build-essential python3 python3-venv python3-pip unzip tar binutils file ca-certificates
 ```
 
 ### Python virtual environment cannot be created
@@ -1385,14 +1791,14 @@ Raspberry Pi 5
 
 ### Regression test cannot find FFmpeg libraries
 
-Use the current v6024 r4 buildkit. The correct source-build staging is:
+Use the current v6042 buildkit. The source-build staging layout intentionally differs from the final installable package:
 
 ```text
-bin/ffmpeg       diagnostic executable
-lib/*.so         private FFmpeg libraries
+bin/ffmpeg       diagnostic executable used by build/tests
+lib/*.so         private FFmpeg libraries during source-tree build
 ```
 
-The final installable package is different and places required private libraries directly under `bin/`.
+The final installable package places the required private shared libraries directly under `bin/` and does not include the FFmpeg command-line executable.
 
 ### Native engine has unresolved libraries
 
@@ -1414,7 +1820,7 @@ PORT="15001"
 
 Use an unused port between 1 and 65535.
 
-### Browser cannot connect from another computer
+### Browser cannot connect in trusted-LAN mode
 
 Check:
 
@@ -1422,9 +1828,30 @@ Check:
 - the selected port;
 - network routing;
 - that `start.sh` is still running;
-- the address of the Web Broadcaster host.
+- the address of the Web Broadcaster host;
+- that `BIND_HOST="0.0.0.0"` is still configured for LAN access.
 
-The application binds to `0.0.0.0`, but network access may still be blocked by the operating system or network infrastructure.
+### Public HTTPS does not work through nginx
+
+Check in this order:
+
+1. `PUBLIC_INTERNET_MODE="ON"`.
+2. `BIND_HOST="127.0.0.1"`.
+3. `TRUSTED_HOSTS` exactly matches the public hostname.
+4. `HTTPS_MODE="OFF"` when nginx owns TLS.
+5. `PROXY_COUNT="1"` for one local nginx proxy.
+6. `ss -ltnp | grep ':15000'` shows only loopback for Web Broadcaster.
+7. `sudo nginx -t` succeeds.
+8. TCP 80/443 reach nginx.
+9. TCP 15000 is not publicly forwarded.
+10. The Let's Encrypt certificate is valid for the hostname.
+11. The nginx SSE locations have proxy buffering disabled.
+
+See `docs/NGINX_PUBLIC_HTTPS.md` for the complete procedure.
+
+### Invalid Host returns HTTP 400
+
+In public mode this is expected when the request Host is not included in `TRUSTED_HOSTS`. Do not weaken Host validation to make an incorrect hostname work; fix DNS, nginx `server_name` or `TRUSTED_HOSTS` instead.
 
 ### Music files cannot be opened
 
@@ -1464,34 +1891,47 @@ Do not edit an active SQLite database manually. Stop Web Broadcaster first, copy
 
 ### Network exposure
 
-The application listens on all interfaces by default. Do not expose it directly to an untrusted public network without appropriate controls.
+Do not expose the default trusted-LAN HTTP listener directly to the public Internet.
 
-Recommended protections include:
+For public access, the recommended architecture is:
 
-- host firewall rules;
-- a private/VPN network;
-- a reverse proxy with TLS;
-- strong application passwords;
-- restricted filesystem permissions;
-- regular database backups.
+```text
+Internet -> nginx HTTPS :443 -> 127.0.0.1:15000 -> Web Broadcaster
+```
 
-### Flask server
+Keep TCP 15000 private and use the supplied nginx/Certbot deployment documentation.
 
-The packaged application uses the Flask/Werkzeug server as its application entry point. Treat it as an appliance-style service and protect network access appropriately. Review deployment architecture before placing it on a public Internet endpoint.
+### Web server
 
-### Credentials
+The packaged application uses **Cheroot 11.1.2**, not the Flask/Werkzeug development server. Cheroot owns the WSGI listener and can optionally own direct TLS. In the recommended public architecture nginx remains the public TLS endpoint.
 
-Never commit:
+### Credentials and secrets
+
+Never commit or publish:
 
 - Icecast source passwords;
 - user databases;
+- `db/.session_secret`;
+- `db/.setup_token`;
 - `.env` files;
 - TLS private keys;
 - production logs containing sensitive paths or configuration.
 
+### Passwords
+
+v6042 requires 12-256 characters for newly created or changed application passwords. For an Internet-facing instance, use a long, unique password that is not reused by another service.
+
+### Multi-factor authentication
+
+v6042 does not provide built-in MFA/2FA. If this is a requirement for a deployment, place additional access control in front of the application or implement MFA in a future application release rather than assuming password authentication provides MFA-equivalent protection.
+
 ### Filesystem access
 
 Web Broadcaster needs read access to the configured music library and write access to its own runtime directories. Run it as a dedicated, non-root user whenever possible.
+
+### nginx and Certbot state
+
+nginx configuration and Let's Encrypt/Certbot certificate state live outside the Web Broadcaster release directory. Replacing the Web Broadcaster package during an upgrade does not normally replace those files. Preserve and validate them separately.
 
 ---
 
@@ -1504,9 +1944,11 @@ Web Broadcaster needs read access to the configured music library and write acce
 - No generic ARM64 package.
 - No Windows or macOS package.
 - No Liquidsoap compatibility layer.
-- No live FFmpeg command-line subprocess.
+- No live FFmpeg command-line subprocess in the runtime audio path.
 - No SoundSolution subprocess.
 - No Wine/AppImage/FUSE dependency.
+- No built-in MFA/2FA in v6042.
+- Trusted-LAN mode uses plain HTTP and must not be exposed to an untrusted network.
 - The source Git checkout alone is not the complete official native build environment; use the version-matched Release buildkit.
 - Node.js-backed JavaScript regression execution is optional.
 - Public redistribution of bundled binary dependencies requires a separate license/compliance review.
@@ -1515,7 +1957,7 @@ Web Broadcaster needs read access to the configured music library and write acce
 
 ## Dependency manifest
 
-The v6024 buildkit contains the following fixed component packages.
+The v6042 buildkit contains the following fixed native component packages.
 
 ### FFmpeg 7.1.5
 
@@ -1526,25 +1968,35 @@ The v6024 buildkit contains the following fixed component packages.
 | Raspberry Pi 5 | `wb-ffmpeg-7.1.5-arm64-rpi5-runtime.tar.gz` | `29e7a320000fde4d3ee89aa0ce1301806bf2d38874455fcf583679dd20f64424` |
 | Raspberry Pi 5 | `wb-ffmpeg-7.1.5-arm64-rpi5-sdk.tar.gz` | `03746b216af1f546759b15f1bd791e62b811bfb555d1e5d147bf656812b38258` |
 
+FFmpeg builder:
+
+```text
+build_ffmpeg_7_1_5_for_web_broadcaster.sh
+SHA256: e124d204a892d26347ce51da4d9de27684b4455f2b8f42fdd51869e31e6fd431
+```
+
 ### SoundSolution
 
 | Target | Package | SHA-256 |
 |---|---|---|
-| AMD64 | `wb-soundsolution-6.1.0-amd64-runtime.tar.gz` | `cef86d444febc8e45a61718221d2cf2f5ffbaa4bf91d7d20f56907a94ea7c3ef` |
-| AMD64 provenance source | `wb-soundsolution-6.1.0-amd64-source.tar.gz` | `a4d6d640e92cffe90de4ee1817a72ca293b600751148f44b73fed2d47693f8cc` |
-| Raspberry Pi 5 | `wb-soundsolution-6.0.0-arm64-rpi5-runtime.tar.gz` | `84455ef8a15121b88835f28205a4bb325f19d80bd649ebf4ebffff4fe973f4d4` |
-| Raspberry Pi 5 provenance source | `wb-soundsolution-6.0.0-arm64-rpi5-source.tar.gz` | `472ec25be3467a672e4f4ce69beae1eefe59a910cbf1e973d96ef5ceffd0e56c` |
+| AMD64 runtime | `wb-soundsolution-6.1.0-amd64-runtime.tar.gz` | `cef86d444febc8e45a61718221d2cf2f5ffbaa4bf91d7d20f56907a94ea7c3ef` |
+| AMD64 source/provenance | `wb-soundsolution-6.1.0-amd64-source.tar.gz` | `a4d6d640e92cffe90de4ee1817a72ca293b600751148f44b73fed2d47693f8cc` |
+| Raspberry Pi 5 runtime | `wb-soundsolution-6.0.0-arm64-rpi5-runtime.tar.gz` | `84455ef8a15121b88835f28205a4bb325f19d80bd649ebf4ebffff4fe973f4d4` |
+| Raspberry Pi 5 source/provenance | `wb-soundsolution-6.0.0-arm64-rpi5-source.tar.gz` | `472ec25be3467a672e4f4ce69beae1eefe59a910cbf1e973d96ef5ceffd0e56c` |
 
-The component source archives and component builder scripts are retained in the buildkit for provenance and recovery. The normal `build_v6024_linux.sh` path uses the prebuilt architecture-matched SDK/runtime packages and does not rebuild FFmpeg or SoundSolution.
+SoundSolution builder:
 
-### Buildkit source and scripts
+```text
+build_soundsolution_for_web_broadcaster.sh
+SHA256: 2d7fac4027593ad5db9eef845bafcfcb16a8151455731a3398bf5e4ab220fbb6
+```
+
+### v6042 source and build script
 
 | File | SHA-256 |
 |---|---|
-| `Web_Broadcaster_v6024.zip` | `8d8a55bad5d423dafdd4ae46bca911c807224777a8a2a62d89fe87b7a9c20f38` |
-| `build_v6024_linux.sh` | `24c5974a1e679434f2eb37c4cbd0408bf84254b940e8b30ed26f539dca08e794` |
-| `build_ffmpeg_7_1_5_for_web_broadcaster.sh` | `e124d204a892d26347ce51da4d9de27684b4455f2b8f42fdd51869e31e6fd431` |
-| `build_soundsolution_for_web_broadcaster.sh` | `2d7fac4027593ad5db9eef845bafcfcb16a8151455731a3398bf5e4ab220fbb6` |
+| `Web_Broadcaster_v6042.zip` | `5811aaf71e9f2a06a23bbed86a2821741454df4ad098be9e090b110b9abb5171` |
+| `build_v6042_linux.sh` | `0dd2759c6e0d825314928a599114169f59ed0bfb066912fc16c4204092a69441` |
 
 The buildkit's own `SHA256SUMS.txt` remains the authoritative complete internal manifest.
 
@@ -1552,7 +2004,7 @@ The buildkit's own `SHA256SUMS.txt` remains the authoritative complete internal 
 
 ## License and redistribution
 
-A project license is not declared by this README. Add a repository-level `LICENSE` file before presenting the project as open source.
+A project license is not declared by this README. Add a repository-level `LICENSE` file before presenting the project as open source under a specific license.
 
 Unless an explicit license grants additional rights, source availability alone should not be treated as permission to copy, modify or redistribute the project.
 
@@ -1570,8 +2022,10 @@ version.txt
 
 The file is intentionally retained in full and is part of the regression contract. Do not replace it with a shortened changelog.
 
-For the latest release summary, see the final entry for:
+For the current release summary, see the final entry:
 
 ```text
-v6024 - 2026-07-28
+v6042 - 2026-08-16
 ```
+
+The v6042 entry documents the generalized malformed-ID3 metadata console-noise filter and the real FFmpeg 7.1.5 regression coverage added after long-running v6041 testing exposed additional malformed `COMM`, `TENC`, `TCOP` and `TOPE` metadata diagnostics.
