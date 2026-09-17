@@ -38,13 +38,11 @@
 static pthread_mutex_t g_runtime_lock = PTHREAD_MUTEX_INITIALIZER;
 static unsigned int g_runtime_users = 0U;
 
-static bool suppress_noisy_mp3_header_log(void *avcl, int level, const char *format) {
+static bool is_mp3_decoder_context(void *avcl) {
     const AVClass *av_class;
     const char *item_name;
 
-    if (avcl == NULL || format == NULL || level > AV_LOG_ERROR) return false;
-    if (strstr(format, "Header missing") == NULL) return false;
-
+    if (avcl == NULL) return false;
     av_class = *(const AVClass * const *)avcl;
     if (av_class == NULL || av_class->item_name == NULL) return false;
     item_name = av_class->item_name(avcl);
@@ -52,21 +50,30 @@ static bool suppress_noisy_mp3_header_log(void *avcl, int level, const char *for
         && (strcmp(item_name, "mp3float") == 0 || strcmp(item_name, "mp3") == 0);
 }
 
-static bool valid_id3_frame_name(const char *frame_name) {
-    size_t length;
-    size_t index;
+static bool suppress_noisy_mp3_header_log(void *avcl, int level, const char *format) {
+    if (format == NULL || level > AV_LOG_ERROR) return false;
+    if (strstr(format, "Header missing") == NULL) return false;
+    return is_mp3_decoder_context(avcl);
+}
 
-    if (frame_name == NULL) return false;
-    length = strlen(frame_name);
-    if (length != 3U && length != 4U) return false;
-    for (index = 0U; index < length; index++) {
-        const unsigned char value = (unsigned char)frame_name[index];
-        if (!((value >= (unsigned char)'A' && value <= (unsigned char)'Z')
-              || (value >= (unsigned char)'0' && value <= (unsigned char)'9'))) {
-            return false;
-        }
+static bool suppress_recoverable_mp3_decode_log(
+    void *avcl,
+    int level,
+    const char *format
+) {
+    /* The decode loop deliberately treats isolated AVERROR_INVALIDDATA results
+     * as recoverable corrupt MP3 frames and resynchronizes, with a bounded
+     * consecutive-error guard. FFmpeg still logs the frame-level parser details
+     * at AV_LOG_ERROR before returning AVERROR_INVALIDDATA. Hide only those exact
+     * mp3/mp3float diagnostics so recoverable damage does not flood the console;
+     * unrelated libav, container, encoder and I/O errors remain visible. */
+    if (format == NULL || level > AV_LOG_ERROR || !is_mp3_decoder_context(avcl)) {
+        return false;
     }
-    return true;
+    return strcmp(format, "invalid new backstep %d\n") == 0
+        || strcmp(format, "big_values too big\n") == 0
+        || strcmp(format, "invalid block type\n") == 0
+        || strcmp(format, "Error while decoding MPEG audio frame.\n") == 0;
 }
 
 static bool suppress_noisy_id3_metadata_log(
@@ -76,11 +83,14 @@ static bool suppress_noisy_id3_metadata_log(
     va_list arguments
 ) {
     (void)avcl;
+    (void)arguments;
 
-    /* FFmpeg 7.1.5 reports malformed ID3 text/comment metadata at
-     * AV_LOG_ERROR even though the parser only drops the bad metadata frame.
-     * Match only the exact parser formats. Audio/container failures continue
-     * to the default libav callback unchanged. */
+    /* FFmpeg 7.1.5 reports malformed metadata at AV_LOG_ERROR even though the
+     * parser only drops the bad metadata frame. Match only the exact parser
+     * formats. The %s label can be a raw 3/4-character ID3 frame ID or a longer
+     * normalized metadata label such as LYRICIST, MIXARTIST or INVOLVEDPEOPLE.
+     * Audio/container/decoder/encoder/I/O failures continue to the default
+     * libav callback unchanged. */
     if (format == NULL || level > AV_LOG_ERROR) return false;
 
     if (strcmp(format, "Cannot read BOM value, input too short\n") == 0
@@ -91,13 +101,7 @@ static bool suppress_noisy_id3_metadata_log(
     }
 
     if (strcmp(format, "Error reading frame %s, skipped\n") == 0) {
-        const char *frame_name;
-        va_list copy;
-
-        va_copy(copy, arguments);
-        frame_name = va_arg(copy, const char *);
-        va_end(copy);
-        return valid_id3_frame_name(frame_name);
+        return true;
     }
 
     return false;
@@ -110,6 +114,7 @@ static void wb_libav_log_callback(
     va_list arguments
 ) {
     if (suppress_noisy_mp3_header_log(avcl, level, format)) return;
+    if (suppress_recoverable_mp3_decode_log(avcl, level, format)) return;
     if (suppress_noisy_id3_metadata_log(avcl, level, format, arguments)) return;
     av_log_default_callback(avcl, level, format, arguments);
 }
@@ -413,6 +418,127 @@ static int decode_fifo_push(
     return 0;
 }
 
+typedef struct {
+    bool initialized;
+    AVChannelLayout channel_layout;
+    enum AVSampleFormat sample_format;
+    int sample_rate;
+} WbLibavInputContract;
+
+static void decode_input_contract_clear(WbLibavInputContract *contract) {
+    if (contract == NULL) return;
+    if (contract->initialized) av_channel_layout_uninit(&contract->channel_layout);
+    memset(contract, 0, sizeof(*contract));
+}
+
+static int decode_input_contract_prepare(
+    WbLibavInputContract *contract,
+    SwrContext **resampler,
+    const AVFrame *frame,
+    char *error,
+    size_t error_size
+) {
+    AVChannelLayout output_layout;
+    int channels;
+    int planes;
+    int plane;
+    int result;
+
+    if (contract == NULL || resampler == NULL || frame == NULL) {
+        copy_text(error, error_size, "libav decoded an invalid audio frame");
+        return -1;
+    }
+    channels = frame->ch_layout.nb_channels;
+    if (
+        frame->nb_samples <= 0
+        || channels <= 0
+        || channels > 64
+        || frame->sample_rate <= 0
+        || frame->format < 0
+        || frame->extended_data == NULL
+    ) {
+        (void)snprintf(
+            error,
+            error_size,
+            "libav decoded an unsafe audio frame (samples=%d channels=%d sample_rate=%d format=%d)",
+            frame->nb_samples,
+            channels,
+            frame->sample_rate,
+            frame->format
+        );
+        return -1;
+    }
+    planes = av_sample_fmt_is_planar((enum AVSampleFormat)frame->format) ? channels : 1;
+    for (plane = 0; plane < planes; plane += 1) {
+        if (frame->extended_data[plane] == NULL) {
+            (void)snprintf(
+                error,
+                error_size,
+                "libav decoded an unsafe audio frame with a missing channel plane (%d/%d)",
+                plane,
+                planes
+            );
+            return -1;
+        }
+    }
+
+    if (contract->initialized) {
+        if (
+            contract->sample_format != (enum AVSampleFormat)frame->format
+            || contract->sample_rate != frame->sample_rate
+            || av_channel_layout_compare(&contract->channel_layout, &frame->ch_layout) != 0
+        ) {
+            (void)snprintf(
+                error,
+                error_size,
+                "libav decoded audio format changed inside one file (channels %d to %d, sample_rate %d to %d, format %d to %d)",
+                contract->channel_layout.nb_channels,
+                channels,
+                contract->sample_rate,
+                frame->sample_rate,
+                (int)contract->sample_format,
+                frame->format
+            );
+            return -1;
+        }
+        return *resampler != NULL ? 0 : -1;
+    }
+
+    if (av_channel_layout_copy(&contract->channel_layout, &frame->ch_layout) < 0) {
+        copy_text(error, error_size, "cannot copy the decoded audio channel layout");
+        return -1;
+    }
+    contract->sample_format = (enum AVSampleFormat)frame->format;
+    contract->sample_rate = frame->sample_rate;
+    contract->initialized = true;
+
+    av_channel_layout_default(&output_layout, WB_LIBAV_OUTPUT_CHANNELS);
+    result = swr_alloc_set_opts2(
+        resampler,
+        &output_layout,
+        WB_LIBAV_OUTPUT_FORMAT,
+        WB_LIBAV_OUTPUT_SAMPLE_RATE,
+        &contract->channel_layout,
+        contract->sample_format,
+        contract->sample_rate,
+        0,
+        NULL
+    );
+    av_channel_layout_uninit(&output_layout);
+    if (result < 0 || *resampler == NULL) {
+        ff_error_text(result < 0 ? result : AVERROR(ENOMEM), error, error_size);
+        return -1;
+    }
+    result = swr_init(*resampler);
+    if (result < 0) {
+        char detail[128];
+        ff_error_text(result, detail, sizeof(detail));
+        (void)snprintf(error, error_size, "libav resampler initialization failed: %s", detail);
+        return -1;
+    }
+    return 0;
+}
+
 static int64_t frame_source_start_ms(const AVStream *stream, const AVFrame *frame) {
     int64_t timestamp;
     int64_t start_time;
@@ -425,7 +551,8 @@ static int64_t frame_source_start_ms(const AVStream *stream, const AVFrame *fram
 
 static int decode_write_frame(
     WbLibavDecodeSession *session,
-    SwrContext *resampler,
+    SwrContext **resampler,
+    WbLibavInputContract *input_contract,
     AVStream *stream,
     AVFrame *frame,
     int64_t start_ms,
@@ -444,7 +571,12 @@ static int decode_write_frame(
     int accepted_samples;
     int result;
 
-    maximum_samples = swr_get_out_samples(resampler, frame->nb_samples);
+    if (decode_input_contract_prepare(
+            input_contract, resampler, frame, error, error_size
+        ) != 0) {
+        return -1;
+    }
+    maximum_samples = swr_get_out_samples(*resampler, frame->nb_samples);
     if (maximum_samples <= 0) maximum_samples = frame->nb_samples + 64;
     result = av_samples_alloc(
         &output,
@@ -459,7 +591,7 @@ static int decode_write_frame(
         return -1;
     }
     converted = swr_convert(
-        resampler,
+        *resampler,
         &output,
         maximum_samples,
         (const uint8_t * const *)frame->extended_data,
@@ -510,7 +642,8 @@ static int decode_write_frame(
 static int decode_drain_frames(
     WbLibavDecodeSession *session,
     AVCodecContext *decoder,
-    SwrContext *resampler,
+    SwrContext **resampler,
+    WbLibavInputContract *input_contract,
     AVStream *stream,
     AVFrame *frame,
     int64_t start_ms,
@@ -539,6 +672,7 @@ static int decode_drain_frames(
         write_result = decode_write_frame(
             session,
             resampler,
+            input_contract,
             stream,
             frame,
             start_ms,
@@ -571,7 +705,7 @@ static void *decode_thread_main(void *context) {
     AVStream *stream = NULL;
     const AVCodec *codec;
     AVDictionary *options = NULL;
-    AVChannelLayout output_layout;
+    WbLibavInputContract input_contract = {0};
     int audio_index;
     int result;
     bool seek_complete;
@@ -638,31 +772,6 @@ static void *decode_thread_main(void *context) {
         goto failed;
     }
 
-    av_channel_layout_default(&output_layout, WB_LIBAV_OUTPUT_CHANNELS);
-    result = swr_alloc_set_opts2(
-        &resampler,
-        &output_layout,
-        WB_LIBAV_OUTPUT_FORMAT,
-        WB_LIBAV_OUTPUT_SAMPLE_RATE,
-        &decoder->ch_layout,
-        decoder->sample_fmt,
-        decoder->sample_rate,
-        0,
-        NULL
-    );
-    av_channel_layout_uninit(&output_layout);
-    if (result < 0 || resampler == NULL) {
-        ff_error_text(result < 0 ? result : AVERROR(ENOMEM), error, sizeof(error));
-        goto failed;
-    }
-    result = swr_init(resampler);
-    if (result < 0) {
-        char detail[128];
-        ff_error_text(result, detail, sizeof(detail));
-        (void)snprintf(error, sizeof(error), "libav resampler initialization failed: %s", detail);
-        goto failed;
-    }
-
     packet = av_packet_alloc();
     frame = av_frame_alloc();
     if (packet == NULL || frame == NULL) {
@@ -723,7 +832,8 @@ static void *decode_thread_main(void *context) {
             result = decode_drain_frames(
                 session,
                 decoder,
-                resampler,
+                &resampler,
+                &input_contract,
                 stream,
                 frame,
                 session->config.start_ms,
@@ -749,7 +859,8 @@ static void *decode_thread_main(void *context) {
         result = decode_drain_frames(
             session,
             decoder,
-            resampler,
+            &resampler,
+            &input_contract,
             stream,
             frame,
             session->config.start_ms,
@@ -770,6 +881,7 @@ finished:
     av_frame_free(&frame);
     av_packet_free(&packet);
     swr_free(&resampler);
+    decode_input_contract_clear(&input_contract);
     avcodec_free_context(&decoder);
     avformat_close_input(&format);
     return NULL;
@@ -781,6 +893,7 @@ failed:
     av_frame_free(&frame);
     av_packet_free(&packet);
     swr_free(&resampler);
+    decode_input_contract_clear(&input_contract);
     avcodec_free_context(&decoder);
     avformat_close_input(&format);
     return NULL;

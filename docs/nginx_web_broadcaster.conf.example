@@ -1,4 +1,4 @@
-# Web Broadcaster v6042 nginx reverse-proxy example.
+# Web Broadcaster v6049 nginx reverse-proxy example.
 #
 # Replace every occurrence of radio.example.com with the real public hostname.
 # Web Broadcaster must run on 127.0.0.1:15000 with:

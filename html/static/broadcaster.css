@@ -1282,3 +1282,11 @@ body.modal-open{
 }
 
 .studio-logout-form{display:inline-flex;margin:0;padding:0}
+
+/* v6067 structured ON-AIR error/recovery dialog */
+.studio-engine-error-window{max-width:calc(100vw - 32px)}
+.studio-engine-error-body{display:flex;flex-direction:column;gap:12px;padding:14px;background:linear-gradient(180deg,#182230 0%, #0f172a 100%);overflow:auto}
+.studio-engine-error-message{font-size:13px;line-height:1.45;color:#f8fafc;white-space:pre-wrap;overflow-wrap:anywhere}
+.studio-engine-error-path-row{flex-direction:column;gap:5px;font-size:12px;color:#cbd5e1}
+.studio-engine-error-path{display:block;padding:7px 9px;border:1px solid rgba(148,163,184,.24);border-radius:5px;background:rgba(2,6,23,.45);color:#bfdbfe;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.studio-engine-error-window .studio-floating-window__footer{gap:8px}

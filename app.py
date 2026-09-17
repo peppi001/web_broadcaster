@@ -1,6 +1,6 @@
 import os
 
-APP_VERSION = "6042"
+APP_VERSION = "6072"
 
 
 def _environment_switch_enabled(name: str) -> bool:
@@ -138,30 +138,54 @@ _ID3_CONSOLE_EXACT_MESSAGES = (
     b'Error reading lyrics, skipped',
 )
 
-
-def _is_id3_frame_name_bytes(value: bytes) -> bool:
-    return len(value) in (3, 4) and all(
-        48 <= byte <= 57 or 65 <= byte <= 90
-        for byte in value
-    )
+_MP3_RECOVERABLE_CONSOLE_EXACT_MESSAGES = (
+    b'big_values too big',
+    b'invalid block type',
+    b'Error while decoding MPEG audio frame.',
+)
 
 
 def _console_should_suppress_record(record: bytes) -> bool:
     if any(fragment in record for fragment in _CONSOLE_SUPPRESSED_LINE_FRAGMENTS):
         return True
 
-    # FFmpeg 7.1.5 reports malformed ID3 text/comment/lyrics metadata at
-    # AV_LOG_ERROR even though it only skips that metadata frame. Match only
-    # those exact metadata diagnostics so unrelated libav failures remain visible.
+    # FFmpeg 7.1.5 reports malformed metadata at AV_LOG_ERROR even though it
+    # only skips that metadata frame. Match the exact parser diagnostics; frame
+    # labels may be raw 3/4-character ID3 IDs or longer normalized metadata
+    # names such as LYRICIST, MIXARTIST or INVOLVEDPEOPLE. Unrelated libav,
+    # container, decoder, encoder and I/O failures remain visible.
     message = record.rstrip(b'\r\n')
     if any(message.endswith(exact) for exact in _ID3_CONSOLE_EXACT_MESSAGES):
         return True
+
+    # Embedded FFmpeg can report individual damaged MP3 frames at AV_LOG_ERROR
+    # even though the decoder returns AVERROR_INVALIDDATA and the native PCM
+    # path deliberately skips that frame and resynchronizes. Suppress only the
+    # exact mp3/mp3float corruption diagnostics already covered by the bounded
+    # native corrupt-input recovery path; unrelated decoder failures stay visible.
+    mp3_prefix = message.startswith(b'[mp3float @ ') or message.startswith(b'[mp3 @ ')
+    if mp3_prefix:
+        closing = message.find(b'] ')
+        mp3_message = message[closing + 2:] if closing >= 0 else b''
+        if mp3_message in _MP3_RECOVERABLE_CONSOLE_EXACT_MESSAGES:
+            return True
+        if mp3_message.startswith(b'invalid new backstep '):
+            suffix = mp3_message[len(b'invalid new backstep '):]
+            if suffix and suffix.lstrip(b'-').isdigit():
+                return True
 
     marker = b'Error reading frame '
     index = message.rfind(marker)
     if index >= 0 and message.endswith(b', skipped'):
         frame_name = message[index + len(marker):-len(b', skipped')]
-        return _is_id3_frame_name_bytes(frame_name)
+        # This is only the process-level fallback. The native libav callback
+        # already matches the exact parser format before formatting. Accept the
+        # longer normalized uppercase labels observed from FFmpeg while refusing
+        # arbitrary prose or lowercase application errors.
+        return 1 <= len(frame_name) <= 64 and all(
+            48 <= byte <= 57 or 65 <= byte <= 90 or byte == 95
+            for byte in frame_name
+        )
 
     return False
 
@@ -613,6 +637,132 @@ def get_soundsolution_config_path() -> str:
     return _normalize_soundsolution_config_setting(configured)
 
 
+_BUNDLED_SS18_SHA256 = "a645ef67b888c6a87956420567fe39f09c51e8e540d9f320fe99995559f71b71"
+
+
+def _is_recovery_soundsolution_config(path: str | Path) -> bool:
+    """Return True only for the known bundled ss18.dat payload."""
+    candidate = Path(path).expanduser()
+    try:
+        if candidate.name.lower() != "ss18.dat":
+            return False
+        if not (candidate.is_file() and os.access(candidate, os.R_OK)):
+            return False
+        digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        return secrets.compare_digest(digest, _BUNDLED_SS18_SHA256)
+    except Exception:
+        return False
+
+
+def _discover_soundsolution_config_path(configured_path: str = "") -> str:
+    """Locate the bundled ss18.dat after an installation/database move.
+
+    First use the same application-local path resolution that supplies the
+    first-run station default. If that path is unavailable, perform a bounded
+    search below the current Web Broadcaster installation only. The hash guard
+    prevents an unrelated file with the same name from being offered.
+    """
+    candidates: list[Path] = []
+
+    def add_candidate(value: str | Path) -> None:
+        try:
+            candidate = Path(value).expanduser().resolve()
+        except Exception:
+            return
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    add_candidate(get_default_soundsolution_path())
+    add_candidate(Path(BASE_DIR) / "bin" / "ss18.dat")
+    add_candidate(Path(BASE_DIR) / "bin" / "soundsolution" / "ss18.dat")
+
+    raw = str(configured_path or "").strip()
+    if raw:
+        old = Path(raw).expanduser()
+        # Older source-tree layouts kept the file one directory deeper than
+        # the final flat-bin release layout. Check both shapes near the stored
+        # location before walking the current installation.
+        add_candidate(old)
+        add_candidate(old.parent / "ss18.dat")
+        add_candidate(old.parent / "soundsolution" / "ss18.dat")
+        add_candidate(old.parent.parent / "ss18.dat")
+        add_candidate(old.parent.parent / "soundsolution" / "ss18.dat")
+
+    for candidate in candidates:
+        if _is_recovery_soundsolution_config(candidate):
+            return str(candidate)
+
+    base = Path(BASE_DIR).resolve()
+    skip_names = {"db", "temp", "__pycache__", ".git", "build_work", "dist"}
+    try:
+        for walk_base, walk_dirs, walk_files in os.walk(base):
+            current = Path(walk_base)
+            try:
+                depth = len(current.relative_to(base).parts)
+            except Exception:
+                depth = 0
+            walk_dirs[:] = [
+                name for name in walk_dirs
+                if name not in skip_names and depth < 4
+            ]
+            if "ss18.dat" not in walk_files:
+                continue
+            candidate = current / "ss18.dat"
+            if _is_recovery_soundsolution_config(candidate):
+                return str(candidate.resolve())
+    except Exception:
+        pass
+    return ""
+
+
+def _raw_soundsolution_config_path_for_station(station_key: str) -> str:
+    station = str(station_key or "").strip()
+    if not station:
+        return ""
+    conn = None
+    try:
+        conn = get_db_for_station(station)
+        row = conn.execute("SELECT ssproc_appimage FROM settings ORDER BY id DESC LIMIT 1").fetchone()
+        if row is None:
+            return ""
+        try:
+            return str(row["ssproc_appimage"] or "").strip()
+        except Exception:
+            return str(row[0] or "").strip()
+    except Exception:
+        return ""
+    finally:
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
+
+
+def _soundsolution_start_recovery(station_key: str, error_text: str) -> dict[str, str] | None:
+    """Describe an operator-fixable missing ss18.dat startup failure."""
+    error = str(error_text or "").strip()
+    marker = "SoundSolution .dat configuration is not readable:"
+    if marker not in error:
+        return None
+    missing_path = error.split(marker, 1)[1].strip()
+    configured_path = _raw_soundsolution_config_path_for_station(station_key) or missing_path
+    try:
+        missing_name = Path(missing_path).name.lower()
+        configured_name = Path(configured_path).name.lower()
+    except Exception:
+        return None
+    if "ss18.dat" not in {missing_name, configured_name}:
+        return None
+    found_path = _discover_soundsolution_config_path(configured_path)
+    return {
+        "type": "soundsolution_config_missing",
+        "configured_path": configured_path,
+        "missing_path": missing_path,
+        "found_path": found_path,
+    }
+
+
 def prepare_native_soundsolution_runtime() -> dict[str, str]:
     """Validate the in-process SoundSolution library and station configuration.
 
@@ -634,34 +784,46 @@ def prepare_native_soundsolution_runtime() -> dict[str, str]:
     return {"dsp_config_path": str(config_path)}
 
 def guess_metadata_from_filename(path_or_name: str) -> dict:
-    """Generate basic (artist, title) metadata from a filename.
+    """Generate conservative (artist, title) fallback metadata from a filename.
 
-    This is used as a fallback when the audio file and native descriptor have no
-    usable title/artist fields. Common patterns:
+    Embedded media tags always have priority.  When no usable tags exist, only
+    unambiguous filename structure is interpreted:
       - "Artist - Title.ext"
-      - "Artist-Title.ext"
       - "01 - Artist - Title.ext"
+      - "01. Artist - Title.ext"
+      - "01_Artist - Title.ext"
+
+    A bare hyphen is intentionally *not* an artist/title separator.  This keeps
+    legitimate names such as ``90-es_intro``, ``Blink-182`` and ``AC-DC`` intact.
     """
     try:
         name = os.path.basename(path_or_name or "")
-        # Strip extension
+        # Strip extension first so filename punctuation remains available to the
+        # track-number detector below.
         name = re.sub(r"\.[^.]+$", "", name)
-        # Normalize separators
-        name = name.replace("%20", " ").replace("_", " ").strip()
-        name = re.sub(r"\s+", " ", name).strip()
+        name = name.replace("%20", " ").strip()
 
-        # Drop a leading track number prefix like "01 - " / "01." / "01_"
-        name = re.sub(r"^\s*\d+\s*[-._]\s*", "", name).strip()
+        # Remove only an unambiguous leading track number.  In particular, do
+        # not treat a number followed immediately by a hyphenated word (for
+        # example "90-es") as a track prefix.
+        name = re.sub(
+            r"^\s*\d{1,3}(?:\s+-\s+|\.\s+|_\s*)",
+            "",
+            name,
+        ).strip()
+
+        # Underscores are filename word separators, but normalize them only
+        # after track-prefix detection so "01_Artist" can be recognized safely.
+        name = name.replace("_", " ")
+        name = re.sub(r"\s+", " ", name).strip()
 
         artist = ""
         title = name
 
+        # Split artist/title only on the explicit spaced delimiter.  A bare
+        # hyphen may legitimately be part of either an artist or a title.
         if " - " in name:
             a, t = name.split(" - ", 1)
-            if a.strip() and t.strip():
-                artist, title = a.strip(), t.strip()
-        elif "-" in name:
-            a, t = name.split("-", 1)
             if a.strip() and t.strip():
                 artist, title = a.strip(), t.strip()
 
@@ -3288,8 +3450,6 @@ def _read_station_scripts(station_key: str) -> list[dict]:
     return scripts
 
 
-_SCRIPT_ENGINE_LOCK = threading.Lock()
-
 def _reset_station_script_statuses_on_startup() -> None:
     station_keys = get_registered_station_keys() or []
     if not station_keys:
@@ -3330,6 +3490,23 @@ _SCRIPT_ENGINE_LAST_RUN: dict[tuple[str, int], str] = {}
 _SCRIPT_ENGINE_ACTIVE_POLL_SECONDS = 1.0
 _SCRIPT_ENGINE_IDLE_POLL_SECONDS = 30.0
 _SCRIPT_ENGINE_LAST_ON_AIR_BY_STATION: dict[str, bool] = {}
+
+# The scheduler only dispatches station ticks. Each station owns a persistent
+# daemon worker, queue and lock so a slow or failing script on one station can
+# never block exact-time script processing on another station.
+_SCRIPT_ENGINE_STATION_WORKERS_LOCK = threading.Lock()
+_SCRIPT_ENGINE_STATION_WORKER_QUEUES: dict[str, _console_queue.Queue] = {}
+_SCRIPT_ENGINE_STATION_WORKER_THREADS: dict[str, threading.Thread] = {}
+_SCRIPT_ENGINE_STATION_WORK_PENDING: set[str] = set()
+_SCRIPT_ENGINE_STATION_DEFERRED_LATEST: dict[str, datetime] = {}
+_SCRIPT_ENGINE_STATION_DEFERRED_MAX_SECONDS = 60
+_SCRIPT_ENGINE_STATION_LOCKS: dict[str, threading.Lock] = {}
+
+# This is a second, occurrence-level guard in addition to the per-station
+# active-worker/deferred-tick coalescer. It makes a scheduled timestamp
+# idempotent even when a busy worker later replays captured wall-clock ticks.
+_SCRIPT_ENGINE_IN_FLIGHT_LOCK = threading.Lock()
+_SCRIPT_ENGINE_IN_FLIGHT: set[tuple[str, int, str]] = set()
 
 # Persisting the full "Waiting for time ... ETA ..." string every active tick
 # caused a SQLite write every second while ON AIR, even with no browser open.
@@ -3857,14 +4034,69 @@ def _station_url_playback_active(station_key: str) -> bool:
     return False
 
 
-def _mark_station_script_url_skip(
+def _station_scheduler_playback_active(station_key: str) -> bool:
+    """Return True when the currently audible queue item came from Scheduler."""
+    station = str(station_key or "").strip()
+    if not station:
+        return False
+    try:
+        state = dict(_native_station_state(station) or {})
+    except Exception:
+        state = {}
+    if not bool(state.get("running")):
+        return False
+
+    active_line = ""
+    try:
+        active_line = _native_status_line_for_state(station, state)
+        active_info = _ab_line_info(active_line) if active_line else {}
+        if str((active_info or {}).get("queue_origin") or "").strip().lower() == "scheduler":
+            return True
+    except Exception:
+        pass
+
+    # Fallback for brief plan/status remapping windows. Match the native queue/path
+    # identity before trusting the Python now-playing provenance.
+    try:
+        state_queue_id = int(state.get("queue_id") or state.get("native_audio_probe_queue_id") or 0)
+    except Exception:
+        state_queue_id = 0
+    state_path = normalize_media_path(str(state.get("native_audio_probe_path") or "").strip())
+    try:
+        with NOW_PLAYING_LOCK:
+            store = dict(_get_now_playing_store(station) or {})
+        store_origin = str(store.get("queue_origin") or "").strip().lower()
+        store_queue_id = int(store.get("queue_id") or 0)
+        store_path = normalize_media_path(str(store.get("file") or "").strip())
+        identity_matches = bool(
+            (state_queue_id > 0 and store_queue_id == state_queue_id)
+            or (state_path and store_path == state_path)
+        )
+        if identity_matches and store_origin == "scheduler":
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _station_script_interrupt_block_reason(station_key: str) -> str:
+    """Return the reason a scheduled script must not interrupt current playback."""
+    if _station_scheduler_playback_active(station_key):
+        return "scheduler_playback_active"
+    if _station_url_playback_active(station_key):
+        return "url_playback_active"
+    return ""
+
+
+def _mark_station_script_skip(
     station_key: str,
     script_id: int,
     wait_value: str,
     due_dt: datetime,
     run_key: str,
+    reason: str,
 ) -> None:
-    """Consume one due occurrence without queueing it for later catch-up."""
+    """Consume one protected-playback occurrence without queueing it for catch-up."""
     cache_key = (str(station_key), int(script_id))
     _SCRIPT_ENGINE_LAST_RUN[cache_key] = str(run_key or "")
     next_reference = due_dt.replace(microsecond=0) + timedelta(seconds=1)
@@ -3875,11 +4107,25 @@ def _mark_station_script_url_skip(
     )
     if _RUNTIME_LOGGING_ENABLED:
         logger.warning(
-            "Scheduled script skipped because URL playback is active: station=%s script_id=%s due=%s",
+            "Scheduled script skipped because protected playback is active: station=%s script_id=%s due=%s reason=%s",
             station_key,
             int(script_id),
             str(run_key or ""),
+            str(reason or "protected_playback_active"),
         )
+
+
+def _mark_station_script_url_skip(
+    station_key: str,
+    script_id: int,
+    wait_value: str,
+    due_dt: datetime,
+    run_key: str,
+) -> None:
+    """Backward-compatible URL-only wrapper for the generalized script guard."""
+    _mark_station_script_skip(
+        station_key, script_id, wait_value, due_dt, run_key, "url_playback_active"
+    )
 
 
 def _cancel_scheduled_script_queue_items(
@@ -3987,10 +4233,11 @@ def _run_station_script_once(station_key: str, script_row: dict, now_dt: datetim
     if _SCRIPT_ENGINE_LAST_RUN.get(cache_key) == run_key:
         return
 
-    # First guard: an already-running URL consumes this occurrence without any
-    # queue mutation. The missed announcement is intentionally not replayed.
-    if _station_url_playback_active(station_key):
-        _mark_station_script_url_skip(station_key, script_id, wait_value, due_dt, run_key)
+    # First guard: protected playback consumes this occurrence without any queue
+    # mutation. The missed announcement is intentionally not replayed.
+    block_reason = _station_script_interrupt_block_reason(station_key)
+    if block_reason:
+        _mark_station_script_skip(station_key, script_id, wait_value, due_dt, run_key, block_reason)
         return
 
     created_queue_ids = []
@@ -4013,9 +4260,10 @@ def _run_station_script_once(station_key: str, script_row: dict, now_dt: datetim
             _SCRIPT_ENGINE_LAST_RUN[cache_key] = run_key
             return
         # Second guard: check again immediately before the first persistent
-        # queue write, closing the normal scheduler/URL-start race window.
-        if _station_url_playback_active(station_key):
-            _mark_station_script_url_skip(station_key, script_id, wait_value, due_dt, run_key)
+        # queue write, closing the normal protected-playback race window.
+        block_reason = _station_script_interrupt_block_reason(station_key)
+        if block_reason:
+            _mark_station_script_skip(station_key, script_id, wait_value, due_dt, run_key, block_reason)
             return
         created_queue_ids = _enqueue_track_ids_return_queue_ids_for_station(
             station_key,
@@ -4063,16 +4311,17 @@ def _run_station_script_once(station_key: str, script_row: dict, now_dt: datetim
         group_track_ids: list[int] = []
         group_pos: str | None = None
 
-        url_skip_detected = False
+        protected_skip_reason = ""
 
         def flush_file_group() -> bool:
-            nonlocal group_track_ids, group_pos, created_queue_ids, top_queue_ids, url_skip_detected
+            nonlocal group_track_ids, group_pos, created_queue_ids, top_queue_ids, protected_skip_reason
             if not group_track_ids:
                 return True
-            # Check before every grouped queue insert. If an URL became active
-            # after an earlier group, the caller rolls those rows back as well.
-            if _station_url_playback_active(station_key):
-                url_skip_detected = True
+            # Check before every grouped queue insert. If protected playback became
+            # active after an earlier group, the caller rolls those rows back too.
+            current_block_reason = _station_script_interrupt_block_reason(station_key)
+            if current_block_reason:
+                protected_skip_reason = current_block_reason
                 return False
             current_pos = str(group_pos or "end").strip().lower() or "end"
             group_queue_ids = _enqueue_track_ids_return_queue_ids_for_station(station_key, [int(tid) for tid in group_track_ids], current_pos)
@@ -4102,9 +4351,11 @@ def _run_station_script_once(station_key: str, script_row: dict, now_dt: datetim
         else:
             ok = flush_file_group()
 
-        if url_skip_detected:
-            _cancel_scheduled_script_queue_items(station_key, created_queue_ids)
-            _mark_station_script_url_skip(station_key, script_id, wait_value, due_dt, run_key)
+        if protected_skip_reason:
+            _cancel_scheduled_script_queue_items(station_key, created_queue_ids, protected_skip_reason)
+            _mark_station_script_skip(
+                station_key, script_id, wait_value, due_dt, run_key, protected_skip_reason
+            )
             return
 
         if ok and top_queue_ids:
@@ -4121,11 +4372,12 @@ def _run_station_script_once(station_key: str, script_row: dict, now_dt: datetim
     if not ok and created_queue_ids:
         _cancel_scheduled_script_queue_items(station_key, created_queue_ids, "script_queue_insert_failed")
 
-    # Third guard: if URL playback became active during queue construction,
+    # Third guard: if protected playback became active during queue construction,
     # remove exactly this occurrence's rows before any reorder or replan.
-    if ok and _station_url_playback_active(station_key):
-        _cancel_scheduled_script_queue_items(station_key, created_queue_ids)
-        _mark_station_script_url_skip(station_key, script_id, wait_value, due_dt, run_key)
+    block_reason = _station_script_interrupt_block_reason(station_key) if ok else ""
+    if ok and block_reason:
+        _cancel_scheduled_script_queue_items(station_key, created_queue_ids, block_reason)
+        _mark_station_script_skip(station_key, script_id, wait_value, due_dt, run_key, block_reason)
         return
 
     if ok and queue_directory_path and queue_directory_pos == "top":
@@ -4136,7 +4388,7 @@ def _run_station_script_once(station_key: str, script_row: dict, now_dt: datetim
         moved = _move_station_queue_ids_to_front(station_key, created_queue_ids)
         ok = bool(moved)
 
-    if ok:
+    if ok and not do_next:
         try:
             try:
                 wake_autodj_worker()
@@ -4147,28 +4399,44 @@ def _run_station_script_once(station_key: str, script_row: dict, now_dt: datetim
         except Exception as exc:
             ok = False
 
-    # Fourth guard: replan can overlap an URL track start. Roll back the
+    # Fourth guard: replan can overlap protected playback starting. Roll back the
     # announcement before submitting the serialized Manual Next request.
-    if ok and _station_url_playback_active(station_key):
-        _cancel_scheduled_script_queue_items(station_key, created_queue_ids)
-        _mark_station_script_url_skip(station_key, script_id, wait_value, due_dt, run_key)
+    block_reason = _station_script_interrupt_block_reason(station_key) if ok else ""
+    if ok and block_reason:
+        _cancel_scheduled_script_queue_items(station_key, created_queue_ids, block_reason)
+        _mark_station_script_skip(station_key, script_id, wait_value, due_dt, run_key, block_reason)
         return
 
     if ok and do_next:
-        # Script next() must use exactly the same backend NEXT helper as the UI
-        # manual Next button.  Do not call /api/control and do not use a separate
-        # script-break implementation here.
-        time.sleep(0.2)
-        next_result = _perform_player_manual_next_action(
-            station_key,
-            action="next",
-            source="script",
-            guarded_queue_ids=created_queue_ids,
+        # A script interrupt owns the queue head and then delegates the actual
+        # handoff to serialized Manual Next.  Do not preload the script group via
+        # queue-mutation replan first: a native crossfade can make that snapshot
+        # stale and repurpose a deck that has just become audible.
+        transition_safe, _transition_state = _ab_wait_for_native_transition_idle(
+            station_key, timeout_sec=7.0, poll_interval_sec=0.02
         )
+        if not transition_safe:
+            ok = False
+            next_result = {
+                "success": False,
+                "error": "native_transition_did_not_settle",
+            }
+        else:
+            next_result = _perform_player_manual_next_action(
+                station_key,
+                action="next",
+                source="script",
+                guarded_queue_ids=created_queue_ids,
+            )
         next_ok = bool((next_result or {}).get("success"))
+        if not next_ok and not bool((next_result or {}).get("skipped")):
+            ok = False
         if bool((next_result or {}).get("skipped")):
-            _cancel_scheduled_script_queue_items(station_key, created_queue_ids)
-            _mark_station_script_url_skip(station_key, script_id, wait_value, due_dt, run_key)
+            skip_reason = str((next_result or {}).get("reason") or "protected_playback_active")
+            _cancel_scheduled_script_queue_items(station_key, created_queue_ids, skip_reason)
+            _mark_station_script_skip(
+                station_key, script_id, wait_value, due_dt, run_key, skip_reason
+            )
             return
     elif ok:
         try:
@@ -4180,7 +4448,233 @@ def _run_station_script_once(station_key: str, script_row: dict, now_dt: datetim
     _set_station_script_status(station_key, script_id, _format_script_waiting_status(wait_value, now_dt) if ok else "Error")
 
 
+def _script_engine_debug_warning(message: str, *args, exc_info: bool = False) -> None:
+    """Emit script-engine diagnostics only when the existing DEBUG gate is enabled."""
+    if not _RUNTIME_LOGGING_ENABLED:
+        return
+    try:
+        logger.warning(message, *args, exc_info=bool(exc_info))
+    except Exception:
+        pass
+
+
+def _script_engine_get_station_lock(station_key: str) -> threading.Lock:
+    station_key = str(station_key or "").strip()
+    with _SCRIPT_ENGINE_STATION_WORKERS_LOCK:
+        lock = _SCRIPT_ENGINE_STATION_LOCKS.get(station_key)
+        if lock is None:
+            lock = threading.Lock()
+            _SCRIPT_ENGINE_STATION_LOCKS[station_key] = lock
+        return lock
+
+
+def _script_engine_due_occurrence_key(
+    station_key: str,
+    script_row: dict,
+    now_dt: datetime,
+) -> tuple[str, int, str] | None:
+    """Return the exact due occurrence identity without mutating script state."""
+    try:
+        script_id = int(script_row.get("id") or 0)
+        raw_path = str(script_row.get("script_path") or "").strip()
+        if script_id <= 0 or not raw_path:
+            return None
+        entry = _get_cached_station_script_definition(station_key, script_id, raw_path)
+        parsed = (entry or {}).get("parsed") or {}
+        if not isinstance(parsed, dict):
+            return None
+        wait_value = str(parsed.get("wait_for_time") or "").strip()
+        due_dt = _script_due_run_datetime(wait_value, now_dt)
+        if due_dt is None:
+            return None
+        run_key = due_dt.replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        return (str(station_key or "").strip(), script_id, run_key)
+    except Exception:
+        return None
+
+
+def _script_engine_claim_occurrence(occurrence_key: tuple[str, int, str] | None) -> bool:
+    if not occurrence_key:
+        return True
+    with _SCRIPT_ENGINE_IN_FLIGHT_LOCK:
+        if occurrence_key in _SCRIPT_ENGINE_IN_FLIGHT:
+            return False
+        _SCRIPT_ENGINE_IN_FLIGHT.add(occurrence_key)
+        return True
+
+
+def _script_engine_release_occurrence(occurrence_key: tuple[str, int, str] | None) -> None:
+    if not occurrence_key:
+        return
+    with _SCRIPT_ENGINE_IN_FLIGHT_LOCK:
+        _SCRIPT_ENGINE_IN_FLIGHT.discard(occurrence_key)
+
+
+def _script_engine_process_station(station_key: str, now_dt: datetime) -> None:
+    """Process one station independently from every other station."""
+    station_key = str(station_key or "").strip()
+    if not station_key:
+        return
+
+    station_lock = _script_engine_get_station_lock(station_key)
+    with station_lock:
+        station_on_air = bool(is_station_on_air(station_key))
+        if not station_on_air:
+            was_on_air = _SCRIPT_ENGINE_LAST_ON_AIR_BY_STATION.get(station_key)
+            _SCRIPT_ENGINE_LAST_ON_AIR_BY_STATION[station_key] = False
+            # Keep the original edge-triggered DB behavior: only persist Stopped
+            # on startup or when this station actually leaves ON AIR.
+            if was_on_air is None or was_on_air is True:
+                scripts = _read_station_scripts(station_key)
+                for item in scripts:
+                    try:
+                        script_id = int(item.get("id") or 0)
+                        status_value = str(item.get("status") or "Stopped").strip() or "Stopped"
+                        auto_start = 1 if int(item.get("auto_start") or 0) else 0
+                        script_active = _script_status_is_active(status_value)
+                        if auto_start or script_active:
+                            _set_station_script_status(station_key, script_id, "Stopped")
+                    except Exception:
+                        _script_engine_debug_warning(
+                            "Station script OFF-AIR cleanup failed: station=%s script_id=%s",
+                            station_key,
+                            int(item.get("id") or 0) if isinstance(item, dict) else 0,
+                            exc_info=True,
+                        )
+            return
+
+        _SCRIPT_ENGINE_LAST_ON_AIR_BY_STATION[station_key] = True
+        scripts = _read_station_scripts(station_key)
+        for item in scripts:
+            script_id = int(item.get("id") or 0)
+            status_value = str(item.get("status") or "Stopped").strip() or "Stopped"
+            auto_start = 1 if int(item.get("auto_start") or 0) else 0
+            script_active = _script_status_is_active(status_value)
+            if not script_active:
+                # Auto-start is intentionally handled only by the ON-AIR transition
+                # endpoint. A manual STOP must remain stopped while the station stays
+                # on air.
+                if auto_start:
+                    pass
+                if status_value != "Stopped":
+                    _set_station_script_status(station_key, script_id, "Stopped")
+                continue
+
+            occurrence_key = _script_engine_due_occurrence_key(station_key, item, now_dt)
+            if occurrence_key and not _script_engine_claim_occurrence(occurrence_key):
+                continue
+            try:
+                _run_station_script_once(station_key, item, now_dt)
+            except Exception:
+                # A failed occurrence is consumed once. This prevents an exception
+                # after a partial queue mutation from being retried every scheduler
+                # tick inside the five-second grace window.
+                if occurrence_key:
+                    _SCRIPT_ENGINE_LAST_RUN[(station_key, script_id)] = occurrence_key[2]
+                try:
+                    _set_station_script_status(station_key, script_id, "Error")
+                except Exception:
+                    pass
+                _script_engine_debug_warning(
+                    "Scheduled script execution failed: station=%s script_id=%s due=%s",
+                    station_key,
+                    script_id,
+                    occurrence_key[2] if occurrence_key else "not_due",
+                    exc_info=True,
+                )
+            finally:
+                _script_engine_release_occurrence(occurrence_key)
+
+
+def _script_engine_station_worker_loop(station_key: str, work_queue: _console_queue.Queue) -> None:
+    """Persistent daemon worker for exactly one station.
+
+    Scheduler ticks that arrive while this worker is busy are not discarded.
+    Dispatch coalesces them into the latest timestamp and this loop replays the
+    missing wall-clock seconds (bounded to one minute) before becoming idle.
+    That preserves exact-second occurrences such as XX:59:40 without allowing
+    an unbounded per-station work queue.
+    """
+    while True:
+        now_dt = work_queue.get()
+        current_dt = now_dt.replace(microsecond=0)
+        released_pending = False
+        try:
+            while True:
+                try:
+                    _script_engine_process_station(station_key, current_dt)
+                except Exception:
+                    _script_engine_debug_warning(
+                        "Station script worker iteration failed: station=%s",
+                        station_key,
+                        exc_info=True,
+                    )
+
+                with _SCRIPT_ENGINE_STATION_WORKERS_LOCK:
+                    deferred_dt = _SCRIPT_ENGINE_STATION_DEFERRED_LATEST.get(station_key)
+                    if deferred_dt is None or deferred_dt <= current_dt:
+                        _SCRIPT_ENGINE_STATION_DEFERRED_LATEST.pop(station_key, None)
+                        _SCRIPT_ENGINE_STATION_WORK_PENDING.discard(station_key)
+                        released_pending = True
+                        break
+
+                    deferred_dt = deferred_dt.replace(microsecond=0)
+                    max_seconds = max(1, int(_SCRIPT_ENGINE_STATION_DEFERRED_MAX_SECONDS))
+                    next_dt = current_dt + timedelta(seconds=1)
+                    bounded_first_dt = deferred_dt - timedelta(seconds=max_seconds - 1)
+                    if next_dt < bounded_first_dt:
+                        next_dt = bounded_first_dt
+
+                current_dt = next_dt
+        finally:
+            if not released_pending:
+                with _SCRIPT_ENGINE_STATION_WORKERS_LOCK:
+                    _SCRIPT_ENGINE_STATION_DEFERRED_LATEST.pop(station_key, None)
+                    _SCRIPT_ENGINE_STATION_WORK_PENDING.discard(station_key)
+            try:
+                work_queue.task_done()
+            except Exception:
+                pass
+
+
+def _script_engine_dispatch_station(station_key: str, now_dt: datetime) -> bool:
+    """Queue or defer one station tick without losing exact-time occurrences."""
+    station_key = str(station_key or "").strip()
+    if not station_key:
+        return False
+    now_dt = now_dt.replace(microsecond=0)
+    with _SCRIPT_ENGINE_STATION_WORKERS_LOCK:
+        work_queue = _SCRIPT_ENGINE_STATION_WORKER_QUEUES.get(station_key)
+        worker = _SCRIPT_ENGINE_STATION_WORKER_THREADS.get(station_key)
+        if work_queue is None:
+            work_queue = _console_queue.Queue(maxsize=1)
+            _SCRIPT_ENGINE_STATION_WORKER_QUEUES[station_key] = work_queue
+        if worker is None or not worker.is_alive():
+            worker = threading.Thread(
+                target=_script_engine_station_worker_loop,
+                args=(station_key, work_queue),
+                name=f"wb-script-{station_key}",
+                daemon=True,
+            )
+            _SCRIPT_ENGINE_STATION_WORKER_THREADS[station_key] = worker
+            worker.start()
+        if station_key in _SCRIPT_ENGINE_STATION_WORK_PENDING:
+            previous_dt = _SCRIPT_ENGINE_STATION_DEFERRED_LATEST.get(station_key)
+            if previous_dt is None or now_dt > previous_dt:
+                _SCRIPT_ENGINE_STATION_DEFERRED_LATEST[station_key] = now_dt
+            return True
+        _SCRIPT_ENGINE_STATION_WORK_PENDING.add(station_key)
+        _SCRIPT_ENGINE_STATION_DEFERRED_LATEST.pop(station_key, None)
+        try:
+            work_queue.put_nowait(now_dt)
+        except _console_queue.Full:
+            _SCRIPT_ENGINE_STATION_WORK_PENDING.discard(station_key)
+            return False
+        return True
+
+
 def script_engine_process_due_once() -> bool:
+    """Dispatch one scheduler tick; station execution never runs under the global lock."""
     if not _SCRIPT_ENGINE_LOCK.acquire(blocking=False):
         return True
     try:
@@ -4194,62 +4688,48 @@ def script_engine_process_due_once() -> bool:
                     station_keys = [active_key]
             except Exception:
                 station_keys = []
+
         for station_key in station_keys:
-            station_on_air = is_station_on_air(station_key)
-
-            if not station_on_air:
-                was_on_air = _SCRIPT_ENGINE_LAST_ON_AIR_BY_STATION.get(station_key)
-                _SCRIPT_ENGINE_LAST_ON_AIR_BY_STATION[station_key] = False
-                # Only touch the station DB on startup or on the ON-AIR -> OFF-AIR
-                # edge.  The old loop re-wrote Stopped every second while idle.
-                if was_on_air is None or was_on_air is True:
-                    scripts = _read_station_scripts(station_key)
-                    for item in scripts:
-                        script_id = int(item.get("id") or 0)
-                        status_value = str(item.get("status") or "Stopped").strip() or "Stopped"
-                        auto_start = 1 if int(item.get("auto_start") or 0) else 0
-                        script_active = _script_status_is_active(status_value)
-                        if auto_start or script_active:
-                            _set_station_script_status(station_key, script_id, "Stopped")
+            station_key = str(station_key or "").strip()
+            if not station_key:
                 continue
-
-            any_station_on_air = True
-            _SCRIPT_ENGINE_LAST_ON_AIR_BY_STATION[station_key] = True
-            scripts = _read_station_scripts(station_key)
-            for item in scripts:
-                script_id = int(item.get("id") or 0)
-                status_value = str(item.get("status") or "Stopped").strip() or "Stopped"
-                auto_start = 1 if int(item.get("auto_start") or 0) else 0
-                script_active = _script_status_is_active(status_value)
-                if script_active:
-                    _run_station_script_once(station_key, item, now_dt)
-                else:
-                    # Auto-start is intentionally handled only by the ON-AIR transition
-                    # endpoint. Do not restart an auto-start script just because the
-                    # station is still on-air; a manual STOP must keep it stopped.
-                    if auto_start:
-                        pass
-                    if status_value != "Stopped":
-                        _set_station_script_status(station_key, script_id, "Stopped")
+            try:
+                station_on_air = bool(is_station_on_air(station_key))
+                any_station_on_air = any_station_on_air or station_on_air
+                _script_engine_dispatch_station(station_key, now_dt)
+            except Exception:
+                # Dispatch failure for one station must never prevent the remaining
+                # stations from receiving the same exact-time scheduler tick.
+                _script_engine_debug_warning(
+                    "Station script scheduler dispatch failed: station=%s",
+                    station_key,
+                    exc_info=True,
+                )
+                continue
         return any_station_on_air
     finally:
         _SCRIPT_ENGINE_LOCK.release()
 
 
 def _script_engine_loop():
+    """Poll exact-time scripts every second even across transient OFF-AIR reads.
+
+    A single false native on-air sample must never put the global dispatcher to
+    sleep for 30 seconds, because that can skip XX:59:40 for every station at once.
+    The wake event remains interruptible for configuration and station-start changes.
+    """
     while True:
-        sleep_seconds = _SCRIPT_ENGINE_ACTIVE_POLL_SECONDS
-        any_on_air = False
         try:
-            any_on_air = script_engine_process_due_once()
-            if not any_on_air:
-                sleep_seconds = _SCRIPT_ENGINE_IDLE_POLL_SECONDS
+            script_engine_process_due_once()
         except Exception:
-            pass
-        if any_on_air:
-            time.sleep(sleep_seconds)
-        else:
-            _wait_idle_helper_event(_SCRIPT_ENGINE_WAKE_EVENT, sleep_seconds)
+            _script_engine_debug_warning(
+                "Script engine scheduler iteration failed",
+                exc_info=True,
+            )
+        _wait_idle_helper_event(
+            _SCRIPT_ENGINE_WAKE_EVENT,
+            _SCRIPT_ENGINE_ACTIVE_POLL_SECONDS,
+        )
 
 
 _SCRIPT_ENGINE_THREAD = None
@@ -4916,6 +5396,31 @@ def init_db(force: bool = False):
                     autodj_rotation_sig TEXT NOT NULL DEFAULT ''
                 )
                 """
+            )
+
+
+            # Queue provenance lives in a companion table so existing station
+            # databases remain compatible without upgrade ALTER statements.
+            c.execute(
+                """
+                CREATE TABLE IF NOT EXISTS queue_item_metadata (
+                    queue_id INTEGER PRIMARY KEY,
+                    enqueue_origin TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            c.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS queue_item_metadata_cleanup
+                AFTER DELETE ON queue_items
+                BEGIN
+                    DELETE FROM queue_item_metadata WHERE queue_id = OLD.id;
+                END
+                """
+            )
+            c.execute(
+                "DELETE FROM queue_item_metadata WHERE queue_id NOT IN (SELECT id FROM queue_items)"
             )
 
 
@@ -5884,6 +6389,46 @@ def api_studio_settings_dsp():
     })
 
 
+@app.route("/api/studio/settings/soundsolution-recovery", methods=["POST"])
+@login_required
+def api_studio_soundsolution_recovery():
+    """Replace a stale station ss18.dat path with the discovered local file."""
+    station_key = str(get_active_station_key() or "").strip()
+    if not station_key:
+        return jsonify({"ok": False, "error": "No station selected."}), 400
+
+    configured_path = _raw_soundsolution_config_path_for_station(station_key)
+    found_path = _discover_soundsolution_config_path(configured_path)
+    if not found_path:
+        return jsonify({
+            "ok": False,
+            "error": "ss18.dat could not be found in the current Web Broadcaster installation.",
+        }), 404
+
+    conn = get_db_for_station(station_key)
+    try:
+        row = conn.execute("SELECT id FROM settings ORDER BY id DESC LIMIT 1").fetchone()
+        if row is None:
+            return jsonify({"ok": False, "error": "Station settings are missing."}), 409
+        try:
+            settings_id = int(row["id"])
+        except Exception:
+            settings_id = int(row[0])
+        conn.execute(
+            "UPDATE settings SET ssproc_appimage = ?, updated_at = ? WHERE id = ?",
+            (found_path, datetime.now().isoformat(), settings_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return jsonify({
+        "ok": True,
+        "path": found_path,
+        "message": "SoundSolution configuration path was updated.",
+    })
+
+
 @app.route("/api/studio/settings", methods=["POST"])
 @login_required
 def api_studio_settings():
@@ -6476,89 +7021,111 @@ def api_studio_scripts_config(script_id: int):
     return jsonify({"ok": True, "id": int(script_id), "auto_start": auto_start})
 
 
-@app.route("/api/studio/scripts/auto-start-on-air", methods=["POST"])
-@login_required
-def api_studio_scripts_auto_start_on_air():
-    station_key = str(get_active_station_key() or "").strip()
-    if not is_station_on_air(station_key):
-        return jsonify({"ok": False, "error": "Station is OFF AIR.", "code": "station_off_air"}), 409
+def _auto_start_station_automation_for_on_air(station_key: str) -> dict:
+    """Start one station's Auto scripts and scheduler rules after native ON AIR.
+
+    This is backend-authoritative. The browser may call the public endpoint too,
+    but station START must not depend on a Studio page being open.
+    """
+    station_key = str(station_key or "").strip()
+    if not station_key or not is_station_on_air(station_key):
+        return {"ok": False, "error": "Station is OFF AIR.", "code": "station_off_air"}
 
     items = []
     rules = []
+    scripts = _read_station_scripts(station_key)
+    now = _utc_now_naive().isoformat(timespec="seconds")
+    conn = get_db_for_station(station_key)
+    conn.row_factory = sqlite3.Row
     try:
-        scripts = _read_station_scripts(station_key)
-        now = _utc_now_naive().isoformat(timespec="seconds")
-        conn = get_db_for_station(station_key)
-        conn.row_factory = sqlite3.Row
-        try:
-            c = conn.cursor()
-            for item in scripts:
-                script_id = int(item.get("id") or 0)
-                if not script_id:
-                    continue
-                auto_start = 1 if int(item.get("auto_start") or 0) else 0
-                status_value = str(item.get("status") or "Stopped").strip() or "Stopped"
-                if auto_start and not _script_status_is_active(status_value):
-                    script_path_for_status = str(item.get("script_path") or "").strip()
-                    response_status = "Waiting"
-                    try:
-                        entry = _load_station_script_definition_for_start(station_key, script_id, script_path_for_status)
-                        wait_value = _script_definition_wait_value(entry)
-                        if wait_value:
-                            response_status = _format_script_waiting_status(wait_value, datetime.now().replace(microsecond=0))
-                    except Exception:
-                        response_status = "Waiting"
-                    c.execute(
-                        "UPDATE station_scripts SET status = ?, updated_at = ? WHERE id = ?",
-                        (response_status, now, script_id),
-                    )
-                    try:
-                        _sync_script_status_caches(station_key, script_id, response_status)
-                    except Exception:
-                        pass
-                    item = dict(item)
-                    item["status"] = response_status
-                items.append({
-                    "id": script_id,
-                    "status": str(item.get("status") or "Stopped")
-                })
-
-            c.execute("SELECT * FROM scheduler_rules ORDER BY id ASC")
-            scheduler_rows = c.fetchall() or []
-            for row in scheduler_rows:
+        c = conn.cursor()
+        for item in scripts:
+            script_id = int(item.get("id") or 0)
+            if not script_id:
+                continue
+            auto_start = 1 if int(item.get("auto_start") or 0) else 0
+            status_value = str(item.get("status") or "Stopped").strip() or "Stopped"
+            if auto_start and not _script_status_is_active(status_value):
+                script_path_for_status = str(item.get("script_path") or "").strip()
+                response_status = "Waiting"
                 try:
-                    rule = dict(row)
-                except Exception:
-                    rule = {k: row[k] for k in row.keys()} if hasattr(row, 'keys') else {}
-                rule_id = int(rule.get("id") or 0)
-                auto_start = 1 if int(rule.get("auto_start") or 0) else 0
-                is_enabled = 1 if int(rule.get("is_enabled") or 0) else 0
-                next_run_at = str(rule.get("next_run_at") or "").strip()
-                if auto_start and (not is_enabled or not next_run_at):
-                    next_run = compute_next_run_at(str(rule.get("run_when") or ""), _utc_now_naive().replace(microsecond=0))
-                    c.execute(
-                        "UPDATE scheduler_rules SET is_enabled = 1, next_run_at = ?, updated_at = ? WHERE id = ?",
-                        (next_run, now, rule_id),
+                    entry = _load_station_script_definition_for_start(
+                        station_key, script_id, script_path_for_status
                     )
-                    rule["is_enabled"] = 1
-                    rule["next_run_at"] = next_run
-                rules.append({
-                    "id": rule_id,
-                    "is_enabled": 1 if int(rule.get("is_enabled") or 0) else 0,
-                    "next_run_at": str(rule.get("next_run_at") or "")
-                })
-            conn.commit()
-        finally:
-            conn.close()
-    except Exception as exc:
-        return jsonify({"ok": False, "error": f"Failed to auto-start scripts/scheduler rules: {exc}"}), 500
+                    wait_value = _script_definition_wait_value(entry)
+                    if wait_value:
+                        response_status = _format_script_waiting_status(
+                            wait_value, datetime.now().replace(microsecond=0)
+                        )
+                except Exception:
+                    response_status = "Waiting"
+                c.execute(
+                    "UPDATE station_scripts SET status = ?, updated_at = ? WHERE id = ?",
+                    (response_status, now, script_id),
+                )
+                try:
+                    _sync_script_status_caches(station_key, script_id, response_status)
+                except Exception:
+                    pass
+                item = dict(item)
+                item["status"] = response_status
+            items.append({
+                "id": script_id,
+                "status": str(item.get("status") or "Stopped"),
+            })
 
-    return jsonify({
+        c.execute("SELECT * FROM scheduler_rules ORDER BY id ASC")
+        scheduler_rows = c.fetchall() or []
+        for row in scheduler_rows:
+            try:
+                rule = dict(row)
+            except Exception:
+                rule = {k: row[k] for k in row.keys()} if hasattr(row, "keys") else {}
+            rule_id = int(rule.get("id") or 0)
+            auto_start = 1 if int(rule.get("auto_start") or 0) else 0
+            is_enabled = 1 if int(rule.get("is_enabled") or 0) else 0
+            next_run_at = str(rule.get("next_run_at") or "").strip()
+            if auto_start and (not is_enabled or not next_run_at):
+                next_run = compute_next_run_at(
+                    str(rule.get("run_when") or ""),
+                    _utc_now_naive().replace(microsecond=0),
+                )
+                c.execute(
+                    "UPDATE scheduler_rules SET is_enabled = 1, next_run_at = ?, updated_at = ? WHERE id = ?",
+                    (next_run, now, rule_id),
+                )
+                rule["is_enabled"] = 1
+                rule["next_run_at"] = next_run
+            rules.append({
+                "id": rule_id,
+                "is_enabled": 1 if int(rule.get("is_enabled") or 0) else 0,
+                "next_run_at": str(rule.get("next_run_at") or ""),
+            })
+        conn.commit()
+    finally:
+        conn.close()
+
+    _SCRIPT_ENGINE_WAKE_EVENT.set()
+    _SCHEDULER_WAKE_EVENT.set()
+    return {
         "ok": True,
         "station_on_air": True,
         "items": items,
         "rules": rules,
-    })
+    }
+
+
+@app.route("/api/studio/scripts/auto-start-on-air", methods=["POST"])
+@login_required
+def api_studio_scripts_auto_start_on_air():
+    station_key = str(get_active_station_key() or "").strip()
+    try:
+        payload = _auto_start_station_automation_for_on_air(station_key)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Failed to auto-start scripts/scheduler rules: {exc}"}), 500
+    if not bool(payload.get("ok")):
+        return jsonify(payload), 409
+    return jsonify(payload)
 
 
 @app.route("/api/studio/scripts/stop-active-off-air", methods=["POST"])
@@ -7046,11 +7613,7 @@ def _start_encoder_if_autostart_on_air(
     if not result["station_running"]:
         return result
 
-    _encoder_action_native(int(stream_id), "start")
-    try:
-        set_encoder_started_at(int(stream_id), datetime.now().isoformat(timespec="seconds"))
-    except Exception:
-        pass
+    _start_encoder_with_runtime_clock(int(stream_id))
     result["started_immediately"] = True
     return result
 
@@ -7332,8 +7895,7 @@ def api_encoder_configure(stream_id: int):
     started_immediately = False
     if should_start:
         try:
-            _encoder_action_native(stream_id, "start")
-            set_encoder_started_at(stream_id, datetime.now().isoformat(timespec="seconds"))
+            _start_encoder_with_runtime_clock(stream_id)
             started_immediately = bool(not was_running and autostart and station_running)
         except Exception as exc:
             app.logger.warning("Unable to start configured encoder %s: %s", stream_id, exc)
@@ -7401,11 +7963,7 @@ def api_encoder_start(stream_id: int):
     """Start an encoder output and return immediately (frontend will poll for status)."""
     if not session.get("user_id"):
         return jsonify({"success": False, "error": "unauthorized"}), 401
-    _encoder_action_native(stream_id, "start")
-    try:
-        set_encoder_started_at(stream_id, datetime.now().isoformat(timespec="seconds"))
-    except Exception:
-        pass
+    _start_encoder_with_runtime_clock(stream_id)
     _publish_ui_encoders_changed(get_active_station_key() or "", "encoder_start_requested", stream_id)
     return jsonify({"success": True})
 
@@ -7425,17 +7983,144 @@ def api_encoder_stop(stream_id: int):
     return jsonify({"success": True})
 
 
+def _track_file_identity(path: str) -> tuple[int, int] | None:
+    """Return the physical identity used to detect same-path media replacement."""
+    try:
+        stat_result = os.stat(path)
+        file_size = int(stat_result.st_size)
+        file_mtime_ns = int(getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1000000000)))
+        return file_size, file_mtime_ns
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def _track_row_identity(row) -> tuple[int, int] | None:
+    """Return the best previously stored local-file identity for a track row."""
+    try:
+        keys = set(row.keys())
+    except Exception:
+        keys = set()
+
+    for size_name, mtime_name in (
+        ("analysis_file_size", "analysis_file_mtime_ns"),
+        ("runtime_duration_file_size", "runtime_duration_file_mtime_ns"),
+    ):
+        if size_name not in keys or mtime_name not in keys:
+            continue
+        try:
+            size_value = row[size_name]
+            mtime_value = row[mtime_name]
+            if size_value is None or mtime_value is None:
+                continue
+            return int(size_value), int(mtime_value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _reset_track_after_file_replacement(conn, track_id: int, path: str, filename: str, identity: tuple[int, int]) -> None:
+    """Discard file-specific timing state when a different file appears at the same path."""
+    file_size, file_mtime_ns = identity
+    now = datetime.now().isoformat()
+    conn.execute(
+        """
+        UPDATE tracks
+        SET filename = ?,
+            cue_in_seconds = NULL,
+            cue_out_seconds = NULL,
+            cue_trimmed_seconds = NULL,
+            cue_duration_seconds = NULL,
+            cue_fade_start_seconds = NULL,
+            cue_analyzed_at = NULL,
+            audio_start_seconds = NULL,
+            audio_end_seconds = NULL,
+            audio_analyzed_at = NULL,
+            analysis_file_size = ?,
+            analysis_file_mtime_ns = ?,
+            analysis_settings_hash = NULL,
+            analysis_analyzer_version = NULL,
+            analysis_updated_at = NULL,
+            analysis_source = NULL,
+            analysis_error = NULL,
+            runtime_duration_seconds = NULL,
+            runtime_duration_verified_at = NULL,
+            runtime_duration_file_size = NULL,
+            runtime_duration_file_mtime_ns = NULL,
+            runtime_duration_source = NULL
+        WHERE id = ?
+        """,
+        (filename, file_size, file_mtime_ns, int(track_id)),
+    )
+    conn.commit()
+
+    # Re-probe immediately so queue planning gets the new file's duration before
+    # the native PCM analyzer refines cue-in, audio-end and crossfade at load time.
+    try:
+        duration = probe_duration_seconds(path)
+        if duration is not None:
+            conn.execute(
+                """
+                UPDATE tracks
+                SET cue_duration_seconds = ?,
+                    cue_in_seconds = 0.0,
+                    cue_out_seconds = ?,
+                    cue_trimmed_seconds = ?,
+                    cue_analyzed_at = ?,
+                    audio_start_seconds = 0.0,
+                    audio_end_seconds = ?,
+                    audio_analyzed_at = ?
+                WHERE id = ?
+                """,
+                (duration, duration, duration, now, duration, now, int(track_id)),
+            )
+            conn.commit()
+    except Exception:
+        pass
+
+
 def ensure_track(conn, path):
     filename = os.path.basename(path)
+    current_identity = _track_file_identity(path)
     c = conn.cursor()
-    # If the track already exists, return its id.
+    # If the track already exists, refresh it when the physical file behind the
+    # same path changed. This is especially important for Scheduler Add Dir rules,
+    # which intentionally re-read directory contents at execution time.
     c.execute(
-        "SELECT id, play_count, cue_in_seconds, cue_out_seconds, cue_trimmed_seconds, cue_duration_seconds, cue_fade_start_seconds, cue_analyzed_at FROM tracks WHERE path = ?",
+        """
+        SELECT id, play_count, cue_in_seconds, cue_out_seconds, cue_trimmed_seconds,
+               cue_duration_seconds, cue_fade_start_seconds, cue_analyzed_at,
+               analysis_file_size, analysis_file_mtime_ns,
+               runtime_duration_file_size, runtime_duration_file_mtime_ns
+        FROM tracks WHERE path = ?
+        """,
         (path,),
     )
     row = c.fetchone()
     if row:
         track_id = row["id"]
+        previous_identity = _track_row_identity(row)
+
+        if current_identity is not None:
+            if previous_identity is not None and previous_identity != current_identity:
+                _reset_track_after_file_replacement(conn, track_id, path, filename, current_identity)
+                return track_id
+
+            # v6048 databases did not populate the analysis fingerprint. Seed it
+            # without discarding existing manual timing unless a stored runtime
+            # fingerprint already proved that the physical file was replaced.
+            try:
+                c.execute(
+                    """
+                    UPDATE tracks
+                    SET analysis_file_size = ?, analysis_file_mtime_ns = ?, filename = ?
+                    WHERE id = ?
+                    """,
+                    (current_identity[0], current_identity[1], filename, track_id),
+                )
+                conn.commit()
+            except Exception:
+                pass
+
         # Fast backfill: duration only (Mutagen) so UI can show track length immediately.
         try:
             existing_duration = row["cue_duration_seconds"]
@@ -7460,13 +8145,23 @@ def ensure_track(conn, path):
 
         return track_id
 
-    # New track -> insert immediately.
+    # New track -> insert immediately and remember the current physical identity.
     created_at = datetime.now().isoformat()
     try:
-        c.execute(
-            "INSERT INTO tracks (path, filename, created_at) VALUES (?, ?, ?)",
-            (path, filename, created_at),
-        )
+        if current_identity is not None:
+            c.execute(
+                """
+                INSERT INTO tracks (
+                    path, filename, created_at, analysis_file_size, analysis_file_mtime_ns
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (path, filename, created_at, current_identity[0], current_identity[1]),
+            )
+        else:
+            c.execute(
+                "INSERT INTO tracks (path, filename, created_at) VALUES (?, ?, ?)",
+                (path, filename, created_at),
+            )
         track_id = c.lastrowid
         conn.commit()
     except sqlite3.IntegrityError:
@@ -8925,6 +9620,10 @@ def api_ui_events():
 
 
 
+class _StationControlStartError(RuntimeError):
+    """Raised when a control action cannot bring the native station on air."""
+
+
 def _perform_player_manual_next_action(
     station_key: str = "",
     action: str = "next",
@@ -8933,15 +9632,21 @@ def _perform_player_manual_next_action(
     guarded_queue_ids=None,
 ) -> dict:
     """Queue one serialized Manual Next request through the player service."""
-    if str(source or "").strip().lower() == "script" and _station_url_playback_active(station_key):
-        return {
-            "success": True,
-            "accepted": False,
-            "skipped": True,
-            "mode": "scheduled_script_skipped_url_playback",
-            "reason": "url_playback_active",
-            "source": "script",
-        }
+    if str(source or "").strip().lower() == "script":
+        block_reason = _station_script_interrupt_block_reason(station_key)
+        if block_reason:
+            return {
+                "success": True,
+                "accepted": False,
+                "skipped": True,
+                "mode": (
+                    "scheduled_script_skipped_scheduler_playback"
+                    if block_reason == "scheduler_playback_active"
+                    else "scheduled_script_skipped_url_playback"
+                ),
+                "reason": block_reason,
+                "source": "script",
+            }
     return _get_manual_next_orchestrator().perform_action(
         station_key,
         action=action,
@@ -8962,11 +9667,28 @@ def api_control():
         state = _native_station_state(station_key)
         if bool(state.get("running")):
             return state
-        station_start()
+
+        start_payload, start_status = _get_station_service().start(station_key)
+        start_payload = dict(start_payload or {})
+        if int(start_status) != 200 or not bool(start_payload.get("success")):
+            detail = str(start_payload.get("error") or "Native station start failed.").strip()
+            try:
+                with _AB_PLAYER_LOCK:
+                    bootstrap_detail = str(_AB_PLAYER_STATE.get("last_load_error") or "").strip()
+            except Exception:
+                bootstrap_detail = ""
+            if bootstrap_detail and bootstrap_detail not in detail:
+                detail = f"{detail}; bootstrap detail: {bootstrap_detail}"
+            raise _StationControlStartError(detail)
+
         state = _native_station_state(station_key)
-        if not bool(state.get("running")):
-            raise RuntimeError("The native station could not be started for this control action.")
-        return state
+        if bool(state.get("running")):
+            return state
+        if bool(start_payload.get("running")):
+            return start_payload
+        raise _StationControlStartError(
+            "Native station start completed without a running native state."
+        )
 
     try:
         if not station_key:
@@ -9102,9 +9824,13 @@ def api_control():
             return jsonify(result)
 
         return jsonify({"success": True})
+    except _StationControlStartError as e:
+        try:
+            app.logger.error("api_control station start failed (action=%s): %s", action, e)
+        except Exception:
+            pass
+        return jsonify({"success": False, "error": str(e), "action": action}), 503
     except Exception as e:
-        import traceback as _tb
-        _tb.print_exc()
         try:
             app.logger.exception("api_control failed (action=%s)", action)
         except Exception:
@@ -9351,12 +10077,14 @@ def _perform_ab_manual_next_direct_handoff(
     *,
     reserved_queue_lines: list[str] | None = None,
     reservation_id: str = "",
+    script_interrupt: bool = False,
 ) -> dict | None:
     """Execute one authoritative Manual Next handoff through the player service."""
     return _get_player_handoff_service().direct_handoff(
         station_key,
         reserved_queue_lines=reserved_queue_lines,
         reservation_id=reservation_id,
+        script_interrupt=bool(script_interrupt),
     )
 
 
@@ -9825,11 +10553,12 @@ def _build_seek_restart_descriptor(prepend_track: dict | None, prepend_station_k
             qid0 = int(prepend_track.get("queue_id") or 0)
             tid0 = int(prepend_track.get("track_id") or 0)
             skey0 = _m3u_escape(str(prepend_track.get("station_key") or prepend_station_key or "").strip())
+            origin0 = _m3u_escape(str(prepend_track.get("queue_origin") or "").strip().lower())
             if prepend_track.get("_wb_seek_hold"):
-                cue_part0 += f',queue_id="{qid0}",track_id="{tid0}",station_key="{skey0}",wb_seek_hold="1"'
+                cue_part0 += f',queue_id="{qid0}",track_id="{tid0}",station_key="{skey0}",wb_queue_origin="{origin0}",wb_seek_hold="1"'
                 cue_part0 += ',wb_seek_virtual_player="1"'
             else:
-                cue_part0 += f',queue_id="{qid0}",track_id="{tid0}",station_key="{skey0}",wb_seek_restart="1"'
+                cue_part0 += f',queue_id="{qid0}",track_id="{tid0}",station_key="{skey0}",wb_queue_origin="{origin0}",wb_seek_restart="1"'
                 # Keep seek restarts eligible for the normal end-of-track fade. Earlier
                 # older versions added nofade/cross overrides here, which could make
                 # the engine perform a hard handoff when the seeked track reached EOF.
@@ -9974,6 +10703,7 @@ def _build_station_queue_plan(
                 queue_items.track_id AS track_id,
                 COALESCE(queue_items.clean_transition, 0) AS clean_transition,
                 COALESCE(queue_items.script_clean_transition, 0) AS script_clean_transition,
+                COALESCE(queue_item_metadata.enqueue_origin, '') AS enqueue_origin,
                 tracks.path AS path,
                 tracks.filename AS filename,
                 tracks.cue_in_seconds AS cue_in_seconds,
@@ -9984,12 +10714,14 @@ def _build_station_queue_plan(
                 tracks.audio_end_seconds AS audio_end_seconds
             FROM queue_items
             JOIN tracks ON tracks.id = queue_items.track_id
+            LEFT JOIN queue_item_metadata ON queue_item_metadata.queue_id = queue_items.id
             GROUP BY
                 queue_items.id,
                 queue_items.position,
                 queue_items.track_id,
                 queue_items.clean_transition,
                 queue_items.script_clean_transition,
+                queue_item_metadata.enqueue_origin,
                 tracks.path,
                 tracks.filename,
                 tracks.cue_in_seconds,
@@ -10069,9 +10801,11 @@ def _build_station_queue_plan(
                     track_id = int(row["track_id"] or 0)
                 except Exception:
                     track_id = 0
+                queue_origin = str(row["enqueue_origin"] or "").strip().lower() if "enqueue_origin" in row.keys() else ""
                 descriptor = _ab_build_native_stream_descriptor(
                     parts[2].strip(), stream_duration,
                     queue_id=queue_id, track_id=track_id, station_key=sk,
+                    queue_origin=queue_origin,
                 )
                 if descriptor:
                     plan.append(descriptor)
@@ -10086,8 +10820,10 @@ def _build_station_queue_plan(
                 track_id = int(row["track_id"] or 0)
             except Exception:
                 track_id = 0
+            queue_origin = str(row["enqueue_origin"] or "").strip().lower() if "enqueue_origin" in row.keys() else ""
             descriptor = _ab_build_native_stream_descriptor(
                 media_path, 0, queue_id=queue_id, track_id=track_id, station_key=sk,
+                queue_origin=queue_origin,
             )
             if descriptor:
                 plan.append(descriptor)
@@ -10126,9 +10862,10 @@ def _build_station_queue_plan(
             track_id = int(row["track_id"] or 0)
         except Exception:
             track_id = 0
+        queue_origin = str(row["enqueue_origin"] or "").strip().lower() if "enqueue_origin" in row.keys() else ""
         runtime_meta = (
             f',queue_id="{queue_id}",track_id="{track_id}",'
-            f'station_key="{_escape(sk)}"'
+            f'station_key="{_escape(sk)}",wb_queue_origin="{_escape(queue_origin)}"'
         )
         year_part = f',year="{_escape(year)}"' if year else ""
         plan.append(
@@ -10805,6 +11542,7 @@ def _ab_build_native_stream_descriptor(
     queue_id: int = 0,
     track_id: int = 0,
     station_key: str = "",
+    queue_origin: str = "",
     title: str = "Streaming",
     artist: str = "",
 ) -> str:
@@ -10827,6 +11565,7 @@ def _ab_build_native_stream_descriptor(
         "queue_id": str(int(queue_id or 0)),
         "track_id": str(int(track_id or 0)),
         "station_key": str(station_key or ""),
+        "wb_queue_origin": str(queue_origin or "").strip().lower(),
         "artist": str(artist or ""),
         "title": str(title or "Streaming"),
         "webradio_url": stream_url,
@@ -11103,6 +11842,7 @@ def _ab_line_info(uri: str) -> dict:
         "queue_id": _i("queue_id", "wb_queue_id", default=0),
         "track_id": _i("track_id", "wb_track_id", default=0),
         "station_key": str(meta.get("station_key") or "").strip(),
+        "queue_origin": str(meta.get("wb_queue_origin") or "").strip().lower(),
         "slot_token": str(meta.get("wb_ab_slot_token") or "").strip(),
         "cue_in": max(0.0, cue_in),
         "cue_out": max(0.0, cue_out),
@@ -11403,6 +12143,7 @@ def _ab_apply_now_playing_line(station_key: str, uri: str, *, reset_progress: bo
             store["file"] = path
             store["queue_id"] = queue_id
             store["track_id"] = track_id
+            store["queue_origin"] = str(info.get("queue_origin") or "").strip().lower()
             store["duration"] = float(orig_total or max(0.0, cue_out - cue_in))
             store["display_original_duration"] = float(orig_total or max(0.0, cue_out))
             store["display_seek_base"] = float(cue_in)
@@ -11607,12 +12348,88 @@ def _ab_record_player_loaded_identity(
     return True
 
 
+def _ab_native_deck_runtime_phase(
+    native_state: dict,
+    player: str,
+) -> tuple[str, int, str]:
+    """Return the authoritative lifecycle phase for one physical native deck.
+
+    Audio-probe status belongs to a specific queue/slot identity.  A recycled
+    deck can briefly expose the previous probe's EOF/error state after a new
+    descriptor has already been confirmed, so terminal/prebuffer facts are
+    trusted only when the probe identity matches the confirmed deck identity.
+    """
+    player = "a" if str(player).lower().endswith("a") else "b"
+    state = dict(native_state or {})
+    try:
+        deck_queue_id = int(state.get(f"deck_{player}_queue_id") or 0)
+    except Exception:
+        deck_queue_id = 0
+    deck_slot_token = str(state.get(f"deck_{player}_slot_token") or "").strip()
+    if deck_queue_id <= 0 and not deck_slot_token:
+        return "empty", deck_queue_id, deck_slot_token
+
+    try:
+        audio_queue_id = int(state.get(f"native_audio_deck_{player}_queue_id") or 0)
+    except Exception:
+        audio_queue_id = 0
+    audio_slot_token = str(state.get(f"native_audio_deck_{player}_slot_token") or "").strip()
+    audio_identity_matches = bool(
+        deck_queue_id > 0
+        and audio_queue_id == deck_queue_id
+        and (not deck_slot_token or audio_slot_token == deck_slot_token)
+    )
+    status = str(state.get(f"native_audio_deck_{player}_status") or "").strip().lower()
+    terminal_statuses = {
+        "eof",
+        "error",
+        "skipped",
+        "stopped",
+        "disabled",
+        "memory_error",
+        "cond_error",
+        "thread_error",
+        "ffmpeg_runtime_error",
+    }
+    if bool(
+        state.get(f"deck_{player}_terminal")
+        or state.get(f"deck_{player}_consumed")
+        or state.get(f"native_deck_{player}_analysis_failed")
+        or (audio_identity_matches and status in terminal_statuses)
+    ):
+        return "terminal", deck_queue_id, deck_slot_token
+    if bool(state.get(f"deck_{player}_playback_started")):
+        return "playing", deck_queue_id, deck_slot_token
+    if not bool(state.get(f"native_deck_{player}_analysis_ready")):
+        return "loading", deck_queue_id, deck_slot_token
+
+    try:
+        ring_bytes = int(state.get(f"native_audio_deck_{player}_ring_buffer_bytes") or 0)
+    except Exception:
+        ring_bytes = 0
+    if bool(
+        audio_identity_matches
+        and state.get(f"native_audio_deck_{player}_prebuffer_ready")
+        and ring_bytes > 0
+    ):
+        return "ready", deck_queue_id, deck_slot_token
+    return "prebuffering", deck_queue_id, deck_slot_token
+
+
 def _ab_native_deck_matches_line(
     native_state: dict,
     player: str,
     line: str,
+    *,
+    require_ready: bool = False,
 ) -> tuple[bool, str, int, str]:
-    """Validate that a physical native deck already owns the requested queue row."""
+    """Validate that a physical native deck owns a reusable queue row.
+
+    Queue/token identity alone is insufficient because a recycled deck keeps its
+    last identity after EOF.  Terminal, consumed or analysis-failed candidates
+    are never reusable.  Callers that are about to select the deck can also
+    require completed analysis plus real prebuffered PCM.
+    """
     player = "a" if str(player).lower().endswith("a") else "b"
     state = dict(native_state or {})
     try:
@@ -11641,16 +12458,73 @@ def _ab_native_deck_matches_line(
         if candidate:
             live_slot_token = candidate
             break
-    matches = bool(
+
+    identity_matches = bool(
         expected_queue_id > 0
         and live_queue_id == expected_queue_id
         and live_slot_token
         and expected_key
     )
-    return matches, expected_key, live_queue_id, live_slot_token
+    if not identity_matches:
+        return False, expected_key, live_queue_id, live_slot_token
+
+    try:
+        audio_queue_id = int(state.get(f"native_audio_deck_{player}_queue_id") or 0)
+    except Exception:
+        audio_queue_id = 0
+    audio_slot_token = str(state.get(f"native_audio_deck_{player}_slot_token") or "").strip()
+    audio_identity_matches = bool(
+        live_queue_id > 0
+        and audio_queue_id == live_queue_id
+        and (not live_slot_token or audio_slot_token == live_slot_token)
+    )
+    status = str(state.get(f"native_audio_deck_{player}_status") or "").strip().lower()
+    terminal_statuses = {
+        "eof",
+        "error",
+        "skipped",
+        "stopped",
+        "disabled",
+        "memory_error",
+        "cond_error",
+        "thread_error",
+        "ffmpeg_runtime_error",
+    }
+    lifecycle_terminal = bool(
+        state.get(f"deck_{player}_terminal")
+        or state.get(f"deck_{player}_consumed")
+        or state.get(f"native_deck_{player}_analysis_failed")
+        or (audio_identity_matches and status in terminal_statuses)
+    )
+    if lifecycle_terminal:
+        return False, expected_key, live_queue_id, live_slot_token
+
+    if require_ready:
+        analysis_ready = bool(state.get(f"native_deck_{player}_analysis_ready"))
+        prebuffer_ready = bool(
+            audio_identity_matches
+            and state.get(f"native_audio_deck_{player}_prebuffer_ready")
+        )
+        try:
+            ring_bytes = int(state.get(f"native_audio_deck_{player}_ring_buffer_bytes") or 0)
+        except Exception:
+            ring_bytes = 0
+        if not (analysis_ready and prebuffer_ready and ring_bytes > 0):
+            return False, expected_key, live_queue_id, live_slot_token
+
+    return True, expected_key, live_queue_id, live_slot_token
 
 
-def _ab_push(player: str, uri: str, *, attempts: int = 8, retry_delay: float = 0.35, clear_slot: bool = False, manual_next_fast: bool = False) -> bool:
+def _ab_native_deck_has_live_candidate(native_state: dict, player: str) -> bool:
+    """Return True while a native deck owns a nonterminal live candidate.
+
+    Lifecycle is identity-scoped so a stale EOF/error status from the previous
+    audio probe cannot make a newly confirmed descriptor look terminal.
+    """
+    phase, _queue_id, _slot_token = _ab_native_deck_runtime_phase(native_state, player)
+    return phase in {"loading", "prebuffering", "ready", "playing"}
+
+def _ab_push(player: str, uri: str, *, attempts: int = 8, retry_delay: float = 0.35, clear_slot: bool = False, manual_next_fast: bool = False, reject_if_active_deck: bool = False, reject_if_playback_started: bool = False) -> bool:
     """Load an A/B deck through the configured AudioEngine backend."""
     engine_uri = _ab_prepare_engine_load_uri(player, uri)
     ok = bool(
@@ -11661,6 +12535,8 @@ def _ab_push(player: str, uri: str, *, attempts: int = 8, retry_delay: float = 0
             retry_delay=retry_delay,
             clear_slot=clear_slot,
             manual_next_fast=manual_next_fast,
+            reject_if_active_deck=reject_if_active_deck,
+            reject_if_playback_started=reject_if_playback_started,
         )
     )
     if ok:
@@ -11883,7 +12759,15 @@ def _ab_schedule_inactive_preload_after_start(
                                 # was abandoned and the next cue_out had no ready deck.
                                 push_attempts = 8 if urgent_preload else 3
                                 push_retry = 0.12 if urgent_preload else 0.25
-                                load_ok = bool(_ab_push(inactive_player, line, attempts=push_attempts, retry_delay=push_retry, clear_slot=True))
+                                load_ok = bool(_ab_push(
+                                    inactive_player,
+                                    line,
+                                    attempts=push_attempts,
+                                    retry_delay=push_retry,
+                                    clear_slot=True,
+                                    reject_if_active_deck=True,
+                                    reject_if_playback_started=True,
+                                ))
                                 if load_ok:
                                     with _AB_PLAYER_LOCK:
                                         pi2 = dict(_AB_PLAYER_STATE.get("player_index") or {})
@@ -11940,6 +12824,26 @@ def _ab_hard_handoff_to(player: str, *, station_key: str = "", timeout_sec: floa
 def _ab_transition_to(player: str, duration: float, *, timeout_sec: float = 1.0):
     """Start an A/B transition through the configured AudioEngine backend."""
     return get_audio_engine().transition_to(player, duration, timeout_sec=timeout_sec)
+
+
+def _ab_script_interrupt_to(
+    player: str,
+    duration: float,
+    *,
+    station_key: str = "",
+    timeout_sec: float = 1.0,
+):
+    """Fade the current deck, then start the script deck at full gain at 25% outgoing gain."""
+    engine = get_audio_engine()
+    method = getattr(engine, "script_interrupt_to", None)
+    if not callable(method):
+        raise RuntimeError("native_script_interrupt_not_supported")
+    return method(
+        player,
+        duration,
+        station_key=str(station_key or ""),
+        timeout_sec=float(timeout_sec),
+    )
 
 
 def _native_sync_transition_completion(
@@ -12093,6 +12997,48 @@ def _ab_schedule_deferred_replan(reason: str, delay: float) -> bool:
     except Exception:
         return False
 
+def _ab_wait_for_native_transition_idle(
+    station_key: str,
+    *,
+    timeout_sec: float = 7.0,
+    poll_interval_sec: float = 0.02,
+) -> tuple[bool, dict]:
+    """Wait until neither the native transition nor its outgoing deck is audible.
+
+    Exact-time script interrupts must not repurpose a physical A/B deck while a
+    normal crossfade still owns it.  Native state is authoritative because the
+    transition can begin between two Python scheduler/replan operations.
+    """
+    station_key = str(station_key or "").strip()
+    timeout_sec = max(0.10, float(timeout_sec or 0.0))
+    poll_interval_sec = min(0.10, max(0.01, float(poll_interval_sec or 0.02)))
+    deadline = time.monotonic() + timeout_sec
+    last_state: dict = {}
+    while time.monotonic() < deadline:
+        last_state = dict(_native_station_state(station_key) or {})
+        if not bool(last_state.get("running")):
+            return False, last_state
+        active = str(last_state.get("active_deck") or "").strip().lower()
+        other = "b" if active == "a" else ("a" if active == "b" else "")
+        outgoing_phase = str(
+            last_state.get(f"deck_{other}_lifecycle_phase") if other else ""
+        ).strip().lower()
+        outgoing_playback = bool(
+            other
+            and last_state.get(f"deck_{other}_playback_started")
+            and outgoing_phase == "playing"
+        )
+        hard_handoff_armed = bool(last_state.get("hard_handoff_armed"))
+        if (
+            not bool(last_state.get("transitioning"))
+            and not hard_handoff_armed
+            and not outgoing_playback
+        ):
+            return True, last_state
+        time.sleep(poll_interval_sec)
+    return False, last_state
+
+
 def _ab_replan_after_queue_mutation(reason: str = "queue_mutation") -> bool:
     """Apply UI queue edits without interrupting the currently audible track.
 
@@ -12125,6 +13071,11 @@ def _ab_replan_after_queue_mutation(reason: str = "queue_mutation") -> bool:
     native_state = _native_station_state(station_key) if station_key else {}
     if not bool(native_state.get("running")):
         return True
+    if bool(native_state.get("transitioning")):
+        # A queue edit may land on the same millisecond as a native crossfade.
+        # Never repurpose either physical deck until the outgoing voice is gone.
+        _ab_schedule_deferred_replan(reason, 0.75)
+        return False
 
     with _AB_PLAYER_LOCK:
         handoff_snapshot = dict(_AB_PLAYER_STATE or {})
@@ -12285,7 +13236,15 @@ def _ab_replan_after_queue_mutation(reason: str = "queue_mutation") -> bool:
                 generation=next_generation,
             )
         else:
-            ok_inactive = bool(_ab_push(inactive, planned_lines[1], attempts=12, retry_delay=0.10, clear_slot=True))
+            ok_inactive = bool(_ab_push(
+                inactive,
+                planned_lines[1],
+                attempts=12,
+                retry_delay=0.10,
+                clear_slot=True,
+                reject_if_active_deck=True,
+                reject_if_playback_started=True,
+            ))
         if _ab_abort_stale_replan_if_needed(replan_serial, reason, "after_inactive_load"):
             return False
         if ok_inactive:
@@ -12383,6 +13342,7 @@ def _ab_bootstrap_from_queue_plan(
     station_key: str = "",
     hard_select_active: bool = False,
     prepare_only: bool = False,
+    _bad_track_retry_depth: int = 0,
 ) -> bool:
     """Load the current DB-backed queue plan into the native A/B engine."""
     del hard_select_active
@@ -12451,6 +13411,26 @@ def _ab_bootstrap_from_queue_plan(
                 timeout_sec=4.0,
             )
             if not ready_a:
+                failed_analysis = bool(ready_state.get("native_deck_a_analysis_failed"))
+                failed_queue_id = int(_ab_line_info(plan[0]).get("queue_id") or 0)
+                if failed_analysis and failed_queue_id > 0 and _bad_track_retry_depth < 32:
+                    _get_playback_repository().remove_queue_items(
+                        [failed_queue_id], station_key=station_key
+                    )
+                    _publish_ui_queue_history_changed(
+                        station_key, "native_bad_track_skipped_during_start"
+                    )
+                    fresh_plan = _build_station_queue_plan(station_key)
+                    if not fresh_plan:
+                        autodj_fill_queue_once(replan_after_fill=False)
+                        fresh_plan = _build_station_queue_plan(station_key)
+                    if fresh_plan:
+                        return _ab_bootstrap_from_queue_plan(
+                            fresh_plan,
+                            station_key=station_key,
+                            prepare_only=prepare_only,
+                            _bad_track_retry_depth=_bad_track_retry_depth + 1,
+                        )
                 raise RuntimeError(
                     "native deck A prebuffer was not ready before select: "
                     f"reason={ready_reason} state={ready_state}"
@@ -12568,7 +13548,7 @@ def _ab_find_line_index_by_identity(lines: list[str], *, path: str = "", queue_i
 
 
 
-def _ab_start_cueout_transition_now(station_key: str, *, active: str, target: str, current_index: int, target_index: int, fade: float, generation: int = 0, reason: str = "", token: int = 0, manual_next_fast: bool = False, hard_handoff: bool = False, no_crossfade_handoff: bool = False, manual_next_request_id: str = "") -> bool:
+def _ab_start_cueout_transition_now(station_key: str, *, active: str, target: str, current_index: int, target_index: int, fade: float, generation: int = 0, reason: str = "", token: int = 0, manual_next_fast: bool = False, hard_handoff: bool = False, no_crossfade_handoff: bool = False, script_interrupt: bool = False, manual_next_request_id: str = "") -> bool:
     """Start an A/B cue-out transition and make the target authoritative immediately.
 
     This is used by both the normal monitor and the seek-after-near-EOF watchdog.
@@ -12631,6 +13611,7 @@ def _ab_start_cueout_transition_now(station_key: str, *, active: str, target: st
                     _native_station_state(station_key),
                     target,
                     lines[target_index],
+                    require_ready=True,
                 )
             except Exception:
                 native_target_matches = False
@@ -12658,12 +13639,99 @@ def _ab_start_cueout_transition_now(station_key: str, *, active: str, target: st
                     manual_next_fast=bool(manual_next_fast),
                     manual_next_request_id=str(manual_next_request_id or ""),
                 )
-        if need_push:
-            if not _ab_push(target, lines[target_index], attempts=(8 if hard_select else 3), retry_delay=0.05, clear_slot=True, manual_next_fast=manual_next_fast):
+        if script_interrupt and not hard_select:
+            try:
+                script_target_info = _ab_line_info(lines[target_index])
+                script_target_path = normalize_media_path(str(script_target_info.get("file") or _ab_line_path(lines[target_index]) or ""))
+                script_expected_key = f'{int(script_target_info.get("queue_id") or 0)}:{int(script_target_info.get("track_id") or 0)}:{script_target_path}'
+            except Exception:
+                script_expected_key = ""
+            try:
+                script_native_matches, _script_native_key, script_queue_id, script_slot_token = _ab_native_deck_matches_line(
+                    _native_station_state(station_key),
+                    target,
+                    lines[target_index],
+                    require_ready=True,
+                )
+            except Exception:
+                script_native_matches = False
+                script_queue_id = 0
+                script_slot_token = ""
+            need_push = not bool(
+                loaded_index == target_index
+                and script_expected_key
+                and loaded_key_now == script_expected_key
+                and script_native_matches
+            )
+            if not need_push:
+                _preload_reuse_trace(
+                    "ab_script_interrupt_reused_native_preload",
+                    station_key=station_key,
+                    deck=str(target).upper(),
+                    queue_id=int(script_queue_id or 0),
+                    slot_token=str(script_slot_token or ""),
+                    reason=reason,
+                    target_index=int(target_index),
+                    manual_next_fast=False,
+                    script_interrupt=True,
+                    manual_next_request_id=str(manual_next_request_id or ""),
+                )
+        if script_interrupt and not hard_select and need_push:
+            if not _ab_push(
+                target,
+                lines[target_index],
+                attempts=8,
+                retry_delay=0.05,
+                clear_slot=True,
+                manual_next_fast=False,
+                reject_if_active_deck=True,
+                reject_if_playback_started=True,
+            ):
                 with _AB_PLAYER_LOCK:
                     if claimed_transition:
                         _AB_PLAYER_STATE["transition_starting"] = False
                 return False
+            ready, _ready_state, _ready_reason = _ab_wait_for_native_deck_prebuffer(
+                target,
+                lines[target_index],
+                station_key=station_key,
+                timeout_sec=4.0,
+                poll_interval_sec=0.02,
+            )
+            if not ready:
+                with _AB_PLAYER_LOCK:
+                    if claimed_transition:
+                        _AB_PLAYER_STATE["transition_starting"] = False
+                return False
+            need_push = False
+        if need_push:
+            if not _ab_push(
+                target,
+                lines[target_index],
+                attempts=(8 if hard_select else 3),
+                retry_delay=0.05,
+                clear_slot=True,
+                manual_next_fast=manual_next_fast,
+                reject_if_active_deck=bool(manual_next_fast),
+                reject_if_playback_started=bool(manual_next_fast),
+            ):
+                with _AB_PLAYER_LOCK:
+                    if claimed_transition:
+                        _AB_PLAYER_STATE["transition_starting"] = False
+                return False
+            if manual_next_fast:
+                ready, _ready_state, _ready_reason = _ab_wait_for_native_deck_prebuffer(
+                    target,
+                    lines[target_index],
+                    station_key=station_key,
+                    timeout_sec=4.0,
+                    poll_interval_sec=0.02,
+                )
+                if not ready:
+                    with _AB_PLAYER_LOCK:
+                        if claimed_transition:
+                            _AB_PLAYER_STATE["transition_starting"] = False
+                    return False
         with _AB_PLAYER_LOCK:
             st1 = dict(_AB_PLAYER_STATE or {})
             if bool(st1.get("transitioning")) or str(st1.get("active") or "a").lower() != active:
@@ -12699,6 +13767,12 @@ def _ab_start_cueout_transition_now(station_key: str, *, active: str, target: st
                     generation=int(generation or 0),
                 )
             _ab_select(target)
+        elif script_interrupt:
+            _ab_script_interrupt_to(
+                target,
+                fade,
+                station_key=station_key,
+            )
         else:
             _ab_transition_to(target, fade)
         started_line = lines[target_index]
@@ -12740,9 +13814,17 @@ def _ab_start_cueout_transition_now(station_key: str, *, active: str, target: st
                 pi = {target: final_current_index}
             else:
                 pi[target] = final_current_index
-            _AB_PLAYER_STATE["active"] = target
-            _AB_PLAYER_STATE["current_index"] = final_current_index
-            _AB_PLAYER_STATE["started_at"] = transition_now
+            if script_interrupt:
+                _AB_PLAYER_STATE["active"] = active
+                _AB_PLAYER_STATE["current_index"] = int(current_index)
+                _AB_PLAYER_STATE["started_at"] = float(
+                    _AB_PLAYER_STATE.get("started_at") or transition_now
+                )
+                _AB_PLAYER_STATE["next_index"] = final_current_index
+            else:
+                _AB_PLAYER_STATE["active"] = target
+                _AB_PLAYER_STATE["current_index"] = final_current_index
+                _AB_PLAYER_STATE["started_at"] = transition_now
             _AB_PLAYER_STATE["transitioning"] = False if hard_select else True
             _AB_PLAYER_STATE["transition_started_at"] = 0.0 if hard_select else transition_now
             _AB_PLAYER_STATE["transition_duration"] = 0.0 if hard_select else fade
@@ -12753,7 +13835,8 @@ def _ab_start_cueout_transition_now(station_key: str, *, active: str, target: st
             _AB_PLAYER_STATE["lines"] = final_lines
             _AB_PLAYER_STATE["durations"] = final_durations
             _AB_PLAYER_STATE["fadeouts"] = final_fadeouts
-            _AB_PLAYER_STATE["next_index"] = final_next_index
+            if not script_interrupt:
+                _AB_PLAYER_STATE["next_index"] = final_next_index
             _AB_PLAYER_STATE["player_index"] = pi
             if manual_next_fast:
                 lk = dict(_AB_PLAYER_STATE.get("player_loaded_keys") or {})
@@ -14117,10 +15200,63 @@ def _move_station_queue_ids_to_front(station_key: str, queue_ids: list[int]) -> 
         return False
 
 
+def _mark_queue_items_origin_for_station(
+    station_key: str, queue_ids: list[int], origin: str
+) -> bool:
+    """Persist queue-item provenance for scheduler interruption protection."""
+    normalized_ids: list[int] = []
+    seen: set[int] = set()
+    for queue_id in queue_ids or []:
+        try:
+            value = int(queue_id)
+        except (TypeError, ValueError):
+            continue
+        if value > 0 and value not in seen:
+            normalized_ids.append(value)
+            seen.add(value)
+    if not normalized_ids:
+        return False
+    normalized_origin = str(origin or "").strip().lower()
+    conn = None
+    try:
+        conn = get_db_for_station(station_key)
+        created_at = datetime.now().isoformat(timespec="seconds")
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO queue_item_metadata (queue_id, enqueue_origin, created_at)
+            VALUES (?, ?, ?)
+            """,
+            [(queue_id, normalized_origin, created_at) for queue_id in normalized_ids],
+        )
+        placeholders = ",".join("?" for _ in normalized_ids)
+        row = conn.execute(
+            f"SELECT COUNT(*) FROM queue_item_metadata WHERE queue_id IN ({placeholders}) AND enqueue_origin = ?",
+            (*normalized_ids, normalized_origin),
+        ).fetchone()
+        conn.commit()
+        return int((row[0] if row else 0) or 0) == len(normalized_ids)
+    except Exception:
+        try:
+            if conn is not None:
+                conn.rollback()
+        except Exception:
+            pass
+        return False
+    finally:
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
+
+
 def _enqueue_track_ids_for_station(station_key: str, track_ids: list[int], priority: str) -> bool:
     """Insert scheduler track_ids and notify the native DB-backed planner."""
     created_queue_ids = _enqueue_track_ids_return_queue_ids_for_station(station_key, track_ids, priority)
     if not created_queue_ids:
+        return False
+    if not _mark_queue_items_origin_for_station(station_key, created_queue_ids, "scheduler"):
+        _get_playback_repository().remove_queue_items(created_queue_ids, station_key=station_key)
         return False
     try:
         wake_autodj_worker()
@@ -14147,6 +15283,9 @@ def _apply_scheduler_rule_queue_action_for_station(station_key: str, track_ids: 
 
     created_queue_ids = _enqueue_track_ids_return_queue_ids_for_station(station_key, track_ids, "end")
     if not created_queue_ids:
+        return False
+    if not _mark_queue_items_origin_for_station(station_key, created_queue_ids, "scheduler"):
+        _get_playback_repository().remove_queue_items(created_queue_ids, station_key=station_key)
         return False
 
     moved = _move_station_queue_ids_to_front(station_key, created_queue_ids)
@@ -14970,6 +16109,11 @@ def _get_player_handoff_service() -> PlayerHandoffService:
                     ),
                     same_queue_identity=_ab_same_queue_identity,
                     start_transition=_ab_start_cueout_transition_now,
+                    script_interrupt_fade_seconds=lambda station_key: float(
+                        _ab_get_sam_crossfade_settings(station_key)[
+                            "crossfade_fade_out_seconds"
+                        ]
+                    ),
                     wake_autodj_worker=wake_autodj_worker,
                 )
             )
@@ -15012,6 +16156,7 @@ def _get_manual_next_orchestrator() -> ManualNextOrchestrator:
                     ),
                     wake_autodj_worker=wake_autodj_worker,
                     scheduled_script_url_active=_station_url_playback_active,
+                    scheduled_script_scheduler_active=_station_scheduler_playback_active,
                     cancel_scheduled_script_queue=_cancel_scheduled_script_queue_items,
                 )
             )
@@ -15077,6 +16222,8 @@ def _native_load_requested_next_track(event) -> None:
     The event may arrive before the delayed Python track_started lifecycle worker.
     Therefore event freshness is validated against native get_state, never against
     the mutable Python A/B current index. Repeated native requests are harmless.
+    A deck that still carries a previously played queue identity after EOF is not
+    considered a valid preload and is excluded from persisted-plan recovery.
     """
     station_key = str(getattr(event, "station_key", "") or "").strip()
     payload = dict(getattr(event, "payload", {}) or {})
@@ -15104,39 +16251,186 @@ def _native_load_requested_next_track(event) -> None:
             if not identity_ok:
                 return
 
+            # The current native state, not the queued event payload, owns the
+            # physical deck choice.  This also prevents a delayed need-next
+            # request from targeting a deck that became active meanwhile.
+            target = "b" if native_active == "a" else "a"
+            if _ab_native_deck_has_live_candidate(native_state, target):
+                return
+
             with _AB_PLAYER_LOCK:
                 st = dict(_AB_PLAYER_STATE or {})
                 if not bool(st.get("enabled")):
                     return
                 lines = list(st.get("lines") or [])
                 generation = int(st.get("generation") or 0)
+
+            # Repeated need-next requests are expected while the inactive deck is
+            # still analyzing or prebuffering.  Never replace a live non-terminal
+            # candidate merely because a concurrent Python/SQLite replan points at
+            # another row; doing so can create an endless alternating load storm.
+            if target == native_active:
+                return
+            target_phase, _target_queue_id, _target_slot_token = _ab_native_deck_runtime_phase(
+                native_state, target
+            )
+            if target_phase in {"loading", "prebuffering", "ready", "playing"}:
+                return
+
             current_index = _ab_find_line_index_by_identity(
                 lines, path=event_path, queue_id=event_queue_id
             )
-            if current_index < 0:
-                _ab_signal_monitor_wake(station_key, reason="native_need_next_identity_not_in_plan")
-                return
-            next_index = current_index + 1
-            if next_index >= len(lines):
-                return
-            next_line = lines[next_index]
+
+            def recover_from_persisted_queue(*, excluded_queue_ids=()):
+                nonlocal lines, current_index
+                excluded = {int(value) for value in excluded_queue_ids if int(value or 0) > 0}
+                skip_track_id = 0 if event_queue_id > 0 else int(getattr(event, "track_id", 0) or 0)
+                skip_path = "" if event_queue_id > 0 else event_path
+                fresh_lines = _build_station_queue_plan(
+                    station_key,
+                    skip_queue_id=event_queue_id,
+                    skip_track_id=skip_track_id,
+                    skip_path=skip_path,
+                )
+                if excluded:
+                    fresh_lines = [
+                        line for line in fresh_lines
+                        if int(_ab_line_info(line).get("queue_id") or 0) not in excluded
+                    ]
+                if not fresh_lines:
+                    _ab_signal_monitor_wake(station_key, reason="native_need_next_queue_empty")
+                    try:
+                        wake_autodj_worker()
+                    except Exception:
+                        pass
+                    return None
+
+                if current_index >= 0:
+                    current_line = lines[current_index]
+                    recovered_lines = list(lines[: current_index + 1])
+                    for line in fresh_lines:
+                        if not _ab_same_queue_identity(line, current_line):
+                            recovered_lines.append(line)
+                    recovered_next_index = current_index + 1
+                else:
+                    # Preserve active-deck bookkeeping until the authoritative
+                    # track_started worker catches up, but remove known terminal
+                    # queue identities so they cannot remain the synthetic next.
+                    recovered_lines = []
+                    for line in lines:
+                        try:
+                            line_queue_id = int(_ab_line_info(line).get("queue_id") or 0)
+                        except Exception:
+                            line_queue_id = 0
+                        if line_queue_id in excluded:
+                            continue
+                        recovered_lines.append(line)
+                    first_info = _ab_line_info(fresh_lines[0])
+                    recovered_next_index = _ab_find_line_index_by_identity(
+                        recovered_lines,
+                        queue_id=int(first_info.get("queue_id") or 0),
+                    )
+                    if recovered_next_index < 0:
+                        recovered_next_index = len(recovered_lines)
+                        recovered_lines.extend(fresh_lines)
+                    lines = recovered_lines
+                    current_index = _ab_find_line_index_by_identity(
+                        lines, path=event_path, queue_id=event_queue_id
+                    )
+
+                durations = []
+                fadeouts = []
+                for line in recovered_lines:
+                    duration, fadeout = _ab_line_duration_and_fade(line)
+                    durations.append(duration)
+                    fadeouts.append(fadeout)
+                with _AB_PLAYER_LOCK:
+                    if int((_AB_PLAYER_STATE or {}).get("generation") or 0) == generation:
+                        _AB_PLAYER_STATE["lines"] = recovered_lines
+                        _AB_PLAYER_STATE["durations"] = durations
+                        _AB_PLAYER_STATE["fadeouts"] = fadeouts
+                        _AB_PLAYER_STATE["next_index"] = recovered_next_index
+                lines = recovered_lines
+                return recovered_next_index, recovered_lines[recovered_next_index]
+
+            next_index = current_index + 1 if current_index >= 0 else -1
+            if current_index < 0 or next_index >= len(lines):
+                recovered = recover_from_persisted_queue()
+                if recovered is None:
+                    return
+                next_index, next_line = recovered
+            else:
+                next_line = lines[next_index]
+
+            with _AB_PLAYER_LOCK:
+                if int((_AB_PLAYER_STATE or {}).get("generation") or 0) != generation:
+                    return
+
             next_info = _ab_line_info(next_line)
             next_queue_id = int(next_info.get("queue_id") or 0)
             target_native_queue_id = int(native_state.get(f"deck_{target}_queue_id") or 0)
             target_native_slot = str(native_state.get(f"deck_{target}_slot_token") or "")
             if next_queue_id > 0 and target_native_queue_id == next_queue_id and target_native_slot:
-                _ab_record_player_loaded_identity(
-                    target,
-                    next_line,
-                    generation=generation,
+                ready_match, _ready_key, _ready_qid, _ready_token = _ab_native_deck_matches_line(
+                    native_state, target, next_line, require_ready=True
                 )
-                with _AB_PLAYER_LOCK:
-                    live_index = dict((_AB_PLAYER_STATE or {}).get("player_index") or {})
-                    live_index[target] = next_index
-                    _AB_PLAYER_STATE["player_index"] = live_index
-                    _AB_PLAYER_STATE["next_index"] = next_index
+                if ready_match:
+                    _ab_record_player_loaded_identity(
+                        target,
+                        next_line,
+                        generation=generation,
+                    )
+                    with _AB_PLAYER_LOCK:
+                        live_index = dict((_AB_PLAYER_STATE or {}).get("player_index") or {})
+                        live_index[target] = next_index
+                        _AB_PLAYER_STATE["player_index"] = live_index
+                        _AB_PLAYER_STATE["next_index"] = next_index
+                    return
+
+                pending_match, _pending_key, _pending_qid, _pending_token = _ab_native_deck_matches_line(
+                    native_state, target, next_line, require_ready=False
+                )
+                if pending_match:
+                    # The exact upcoming row is still being analyzed/prebuffered.
+                    # Repeated native requests are expected until it becomes ready.
+                    return
+
+                # The same queue identity is still stamped on the physical deck,
+                # but native lifecycle state proves that the candidate is terminal,
+                # consumed or failed.  It is a stale played/failed row, not a preload.
+                recovered = recover_from_persisted_queue(
+                    excluded_queue_ids=(target_native_queue_id,)
+                )
+                if recovered is None:
+                    return
+                next_index, next_line = recovered
+                next_info = _ab_line_info(next_line)
+                next_queue_id = int(next_info.get("queue_id") or 0)
+
+            # Re-read native state immediately before the destructive load.
+            # Analysis/prebuffer completion and hard handoffs can race the Python
+            # queue-plan work above.  A stale request must never overwrite either
+            # a candidate already in flight or a deck that became active.
+            final_state = _native_station_state(station_key)
+            final_active = str(final_state.get("active_deck") or "").strip().lower()
+            final_queue_id = int(final_state.get("queue_id") or 0)
+            final_slot_token = str(final_state.get("slot_token") or "")
+            final_identity_ok = bool(
+                final_active == native_active
+                and (event_slot_token and final_slot_token == event_slot_token
+                     or not event_slot_token and event_queue_id > 0 and final_queue_id == event_queue_id)
+            )
+            if not final_identity_ok:
                 return
-            ok = _ab_push(target, next_line, attempts=4, retry_delay=0.05, clear_slot=True)
+            target = "b" if final_active == "a" else "a"
+            if _ab_native_deck_has_live_candidate(final_state, target):
+                return
+
+            ok = _ab_push(
+                target, next_line, attempts=4, retry_delay=0.05, clear_slot=True,
+                reject_if_active_deck=True,
+                reject_if_playback_started=True,
+            )
             if ok:
                 with _AB_PLAYER_LOCK:
                     if int((_AB_PLAYER_STATE or {}).get("generation") or 0) == generation:
@@ -15145,10 +16439,16 @@ def _native_load_requested_next_track(event) -> None:
                         _AB_PLAYER_STATE["player_index"] = live_index
                         _AB_PLAYER_STATE["next_index"] = next_index
             else:
-                pass
+                _ab_signal_monitor_wake(station_key, reason="native_need_next_load_failed")
     except Exception as exc:
-        pass
-
+        try:
+            logger.exception(
+                "[Native] need-next recovery failed for station %s: %s",
+                station_key,
+                exc,
+            )
+        except Exception:
+            pass
 
 def _native_load_requested_next_track_guarded(event, request_key: str = "") -> None:
     """Load a native need-next request under the shared deck-plan lock."""
@@ -15530,6 +16830,122 @@ def _schedule_runtime_duration_verification(event) -> bool:
     return True
 
 
+_NATIVE_BAD_TRACK_SKIP_LOCK = threading.RLock()
+_NATIVE_BAD_TRACK_SKIP_PENDING: set[str] = set()
+_NATIVE_BAD_TRACK_SKIP_DONE: dict[str, float] = {}
+_NATIVE_BAD_TRACK_SKIP_TTL_SECONDS = 3600.0
+
+
+def _native_bad_track_debug_warning(message: str, *args, exc_info: bool = False) -> None:
+    """Emit bad-track recovery diagnostics only through the existing DEBUG gate."""
+    if not _RUNTIME_LOGGING_ENABLED:
+        return
+    try:
+        logger.warning(message, *args, exc_info=bool(exc_info))
+    except Exception:
+        pass
+
+
+def _native_bad_track_skip_signature(event) -> str:
+    station_key = str(getattr(event, "station_key", "") or "").strip()
+    queue_id = int(getattr(event, "queue_id", 0) or 0)
+    slot_token = str(getattr(event, "slot_token", "") or "").strip()
+    path = normalize_media_path(str(getattr(event, "path", "") or ""))
+    return f"{station_key}|{queue_id}|{slot_token}|{path}"
+
+
+def _native_bad_track_event_requires_skip(event) -> bool:
+    if str(getattr(event, "event", "") or "") != "native_audio_analysis_failed":
+        return False
+    payload = dict(getattr(event, "payload", {}) or {})
+    return bool(payload.get("skip_required"))
+
+
+def _process_native_bad_track_skip(event, signature: str) -> None:
+    station_key = str(getattr(event, "station_key", "") or "").strip()
+    queue_id = int(getattr(event, "queue_id", 0) or 0)
+    failed_deck = str(getattr(event, "deck", "") or "").strip().lower()
+    if failed_deck not in {"a", "b"}:
+        failed_deck = ""
+    try:
+        if not station_key or queue_id <= 0:
+            return
+        with station_runtime_context(station_key):
+            if not _native_queue_contains_queue_id(station_key, queue_id):
+                return
+            removed = _get_playback_repository().remove_queue_items(
+                [queue_id], station_key=station_key
+            )
+            if removed <= 0:
+                return
+
+            _publish_ui_queue_history_changed(station_key, "native_bad_track_skipped")
+            _publish_ui_event(
+                "queue_changed",
+                station_key,
+                "native_bad_track_skipped",
+                {
+                    "queue_id": queue_id,
+                    "track_id": int(getattr(event, "track_id", 0) or 0),
+                    "file": str(getattr(event, "path", "") or ""),
+                    "deck": str(getattr(event, "deck", "") or ""),
+                },
+            )
+            invalidate_audio_engine_status_cache()
+            wake_autodj_worker()
+
+            native_state = dict(_native_station_state(station_key) or {})
+            if not bool(native_state.get("running")):
+                return
+            active_deck = str(native_state.get("active_deck") or "").strip().lower()
+            active_started = bool(
+                native_state.get(f"deck_{active_deck}_playback_started")
+                or native_state.get("native_audio_probe_activated")
+            )
+            if failed_deck and failed_deck == active_deck and not active_started:
+                # Startup bootstrap owns the synchronous retry for the first deck.
+                # The event worker removes the failed row only, avoiding two
+                # concurrent bootstrap sequences for the same station.
+                return
+
+            _ab_replan_after_queue_mutation(reason="native_bad_track_skipped")
+    except Exception:
+        _native_bad_track_debug_warning(
+            "Native bad-track recovery failed: station=%s queue_id=%s",
+            station_key,
+            queue_id,
+            exc_info=True,
+        )
+    finally:
+        now = time.monotonic()
+        with _NATIVE_BAD_TRACK_SKIP_LOCK:
+            _NATIVE_BAD_TRACK_SKIP_PENDING.discard(signature)
+            _NATIVE_BAD_TRACK_SKIP_DONE[signature] = now
+            for old_signature, completed_at in list(_NATIVE_BAD_TRACK_SKIP_DONE.items()):
+                if now - float(completed_at or 0.0) > _NATIVE_BAD_TRACK_SKIP_TTL_SECONDS:
+                    _NATIVE_BAD_TRACK_SKIP_DONE.pop(old_signature, None)
+
+
+def _schedule_native_bad_track_skip(event) -> bool:
+    if not _native_bad_track_event_requires_skip(event):
+        return False
+    signature = _native_bad_track_skip_signature(event)
+    if not signature.strip("|"):
+        return False
+    with _NATIVE_BAD_TRACK_SKIP_LOCK:
+        if signature in _NATIVE_BAD_TRACK_SKIP_PENDING or signature in _NATIVE_BAD_TRACK_SKIP_DONE:
+            return False
+        _NATIVE_BAD_TRACK_SKIP_PENDING.add(signature)
+    thread = threading.Thread(
+        target=_process_native_bad_track_skip,
+        args=(event, signature),
+        name="native-bad-track-skip",
+        daemon=True,
+    )
+    thread.start()
+    return True
+
+
 def _get_native_lifecycle_coordinator() -> NativeLifecycleCoordinator:
     """Return the process-wide native lifecycle coordinator."""
     global _NATIVE_LIFECYCLE_COORDINATOR
@@ -15553,8 +16969,9 @@ def _get_native_lifecycle_coordinator() -> NativeLifecycleCoordinator:
 
 
 def _native_engine_event_callback(event) -> None:
-    """Forward one native event and schedule non-blocking EOF duration repair."""
+    """Forward native lifecycle events without blocking the socket reader."""
     _schedule_runtime_duration_verification(event)
+    _schedule_native_bad_track_skip(event)
     _get_native_lifecycle_coordinator().handle_event(event)
 
 
@@ -15710,6 +17127,13 @@ def _native_rebuild_plan_after_track_started(station_key: str, event, started_li
 
 
 def _process_native_track_started_event(event) -> bool:
+    """Commit every authoritative native track_started event exactly once.
+
+    Very short tracks can finish before this asynchronous worker reaches their
+    event.  Queue/history persistence therefore follows the immutable event
+    identity, while Now Playing and A/B plan mutation are applied only when the
+    same event is still the currently audible native deck.
+    """
     sk = str(getattr(event, "station_key", "") or "").strip()
     if not sk:
         return True
@@ -15718,34 +17142,63 @@ def _process_native_track_started_event(event) -> bool:
             player_enabled = bool((_AB_PLAYER_STATE or {}).get("enabled"))
         if not player_enabled:
             return True
-        state = _native_station_state(sk)
-        if not bool(state.get("running")):
-            return True
-        queue_id = int(getattr(event, "queue_id", 0) or 0)
-        current_queue_id = int(state.get("queue_id") or 0)
-        active_deck = str(state.get("active_deck") or "").upper()
-        event_deck = str(getattr(event, "deck", "") or "").upper()
-        if queue_id > 0 and current_queue_id > 0 and queue_id != current_queue_id:
-            return True
-        if event_deck and active_deck and event_deck != active_deck:
-            return True
 
+        queue_id = int(getattr(event, "queue_id", 0) or 0)
         started_line = _native_resolve_track_started_line(event)
         if not started_line:
+            # If the queue row already disappeared, this event was committed by
+            # an earlier lifecycle path and is safe to acknowledge as complete.
+            if queue_id > 0 and not _native_queue_contains_queue_id(sk, queue_id):
+                _manual_next_mark_lifecycle(sk, queue_id, success=True)
+                return True
             return False
 
-        _ab_apply_now_playing_line(sk, started_line, reset_progress=True)
         existed_before = _native_queue_contains_queue_id(sk, queue_id)
         committed = _ab_commit_started_track(sk, started_line, reason="native_track_started_event")
         if existed_before and not committed:
             return False
 
-        filled = autodj_fill_queue_once(replan_after_fill=False)
+        _manual_next_mark_lifecycle(
+            sk,
+            queue_id,
+            success=bool(committed or not existed_before),
+        )
+        if existed_before and committed:
+            _publish_ui_queue_history_changed(sk, "native_track_started")
+
+        # Refill the persisted queue even when this was a late short-track event.
+        # The event proves that the row was audible, independent of which deck is
+        # current by the time this worker executes.
+        autodj_fill_queue_once(replan_after_fill=False)
         state = _native_station_state(sk)
         with _AB_PLAYER_LOCK:
             player_enabled = bool((_AB_PLAYER_STATE or {}).get("enabled"))
-        if not player_enabled or not bool(state.get("running")):
+        if not player_enabled:
             return True
+        if not bool(state.get("running")):
+            return True
+
+        current_queue_id = int(state.get("queue_id") or 0)
+        active_deck = str(state.get("active_deck") or "").upper()
+        current_slot_token = str(state.get("slot_token") or "")
+        event_deck = str(getattr(event, "deck", "") or "").upper()
+        event_slot_token = str(getattr(event, "slot_token", "") or "")
+        still_current = bool(
+            (queue_id <= 0 or current_queue_id <= 0 or queue_id == current_queue_id)
+            and (not event_deck or not active_deck or event_deck == active_deck)
+            and (not event_slot_token or not current_slot_token or event_slot_token == current_slot_token)
+        )
+        if not still_current:
+            # Do not roll Now Playing or the A/B plan backwards to an already
+            # finished short item.  Need-next events will use the freshly cleaned
+            # DB queue and the current track's own track_started event will rebuild
+            # the live plan when it reaches this worker.
+            start_autodj_thread(sk)
+            invalidate_audio_engine_status_cache()
+            wake_autodj_worker()
+            return True
+
+        _ab_apply_now_playing_line(sk, started_line, reset_progress=True)
         next_loaded, inactive = _native_rebuild_plan_after_track_started(sk, event, started_line, state)
         start_autodj_thread(sk)
         invalidate_audio_engine_status_cache()
@@ -15763,13 +17216,7 @@ def _process_native_track_started_event(event) -> bool:
             },
         )
         _publish_ui_queue_history_changed(sk, "native_track_started")
-        _manual_next_mark_lifecycle(
-            sk,
-            queue_id,
-            success=bool(committed or not existed_before),
-        )
         return True
-
 
 
 
@@ -15985,6 +17432,15 @@ def _load_native_output_runtime_configs(station_key: str) -> list[dict[str, Any]
     finally:
         conn.close()
 
+    # Each Autostart output is beginning a new encoder lifecycle. Clear any
+    # persisted timestamp before the start attempt so stale state from a crash,
+    # forced process exit or missing STOP path can never survive into this run.
+    for row in rows:
+        try:
+            clear_encoder_started_at(int(row["id"]))
+        except Exception:
+            pass
+
     configs = [
         _native_stream_config_from_row(row, station_key=station_key, enabled=True)
         for row in rows
@@ -16049,6 +17505,27 @@ def _encoder_action_native(stream_id: int, action: str):
     return engine.configure_icecast_output(station_key=station_key, **config)
 
 
+def _start_encoder_with_runtime_clock(stream_id: int):
+    """Start one encoder with a fresh persisted runtime clock.
+
+    The old timestamp is cleared before every real encoder START attempt. This
+    makes the runtime clock self-healing after crashes or forced shutdowns where
+    a matching STOP cleanup could not run. A new timestamp is persisted only
+    after the native START request succeeds.
+    """
+    stream_id = int(stream_id)
+    try:
+        clear_encoder_started_at(stream_id)
+    except Exception:
+        pass
+    result = _encoder_action_native(stream_id, "start")
+    try:
+        set_encoder_started_at(stream_id, datetime.now().isoformat(timespec="seconds"))
+    except Exception:
+        pass
+    return result
+
+
 def _apply_live_dsp_setting(station_key: str) -> dict[str, Any]:
     """Apply the persisted station DSP flag through the live PCM source selector.
 
@@ -16105,6 +17582,24 @@ def _station_mark_runtime_started(station_key: str) -> None:
         progress = _get_progress_state(station_key)
         progress["paused"] = False
         progress["paused_raw_elapsed"] = 0.0
+
+    # Station startup activates the Autostart encoder outputs as real encoder
+    # START operations. Their stale timestamps were cleared before configure;
+    # persist one fresh start time only for outputs the daemon kept enabled.
+    try:
+        station_running, outputs = _native_encoder_runtime_snapshot(station_key)
+        if station_running:
+            started_at = datetime.now().isoformat(timespec="seconds")
+            for output_id, output in outputs.items():
+                if not str(output_id).startswith("stream_") or not bool(output.get("enabled")):
+                    continue
+                try:
+                    stream_id = int(str(output_id).split("_", 1)[1])
+                except (TypeError, ValueError, IndexError):
+                    continue
+                set_encoder_started_at(stream_id, started_at)
+    except Exception:
+        pass
 
 
 def _station_cleanup_failed_start(station_key: str) -> None:
@@ -16214,7 +17709,24 @@ def _get_station_service() -> StationService:
 
 def station_start():
     """Start the active station through the station orchestration service."""
+    station_key = str(get_active_station_key() or "").strip()
     payload, status_code = _get_station_service().start()
+    if int(status_code) != 200 or not bool((payload or {}).get("success")):
+        recovery = _soundsolution_start_recovery(station_key, str((payload or {}).get("error") or ""))
+        if recovery:
+            payload = dict(payload or {})
+            payload["recovery"] = recovery
+    if int(status_code) == 200 and bool((payload or {}).get("success")):
+        try:
+            _auto_start_station_automation_for_on_air(station_key)
+        except Exception:
+            _script_engine_debug_warning(
+                "Station automation auto-start failed after ON AIR: station=%s",
+                station_key,
+                exc_info=True,
+            )
+        _SCRIPT_ENGINE_WAKE_EVENT.set()
+        _SCHEDULER_WAKE_EVENT.set()
     response = jsonify(payload)
     return response if int(status_code) == 200 else (response, int(status_code))
 
@@ -16297,9 +17809,11 @@ if __name__ == "__main__":
 
     from cheroot.wsgi import Server as CherootServer
     from cheroot.ssl.builtin import BuiltinSSLAdapter
+    from cheroot_cleanup import configure_cheroot_connection_cleanup
 
     logging.getLogger("cheroot").setLevel(logging.ERROR)
     server = CherootServer((host, port), app, numthreads=16)
+    configure_cheroot_connection_cleanup(server)
     server.max_request_body_size = 4 * 1024 * 1024
     server.max_request_header_size = 64 * 1024
     if args.https:

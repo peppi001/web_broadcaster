@@ -272,6 +272,9 @@ static bool start_native_transition(
     );
     state->native_timing.transition_completion_pending = true;
     state->native_timing.transition_completion_monotonic_ms = now_ms + release_ms;
+    state->native_timing.transition_entry_pending = false;
+    state->native_timing.transition_entry_monotonic_ms = 0;
+    state->native_timing.transition_script_interrupt = false;
     state->native_timing.transition_from_deck = from_deck;
     state->native_timing.transition_to_deck = to_deck;
     state->native_timing.transition_from_track = *from_track;
@@ -302,12 +305,217 @@ static bool start_native_transition(
     return true;
 }
 
+int wb_native_timing_start_script_interrupt(
+    WbEngineState *state,
+    char to_deck,
+    const WbDeckState *to_track,
+    int64_t fade_ms,
+    char *error,
+    size_t error_size
+) {
+    WbNativeTimingWorker *worker;
+    WbDeckState from_track = {0};
+    WbDeckState target = {0};
+    char from_deck;
+    int64_t now_ms;
+    int64_t entry_delay_ms;
+    int64_t entry_ms;
+    int64_t release_ms;
+    char payload[768];
+
+    if (state == NULL || to_track == NULL) {
+        copy_text(error, error_size, "script interrupt has no target track");
+        return -1;
+    }
+    if (fade_ms < 50) fade_ms = 50;
+    /* Smoothstep fade-out reaches 25% outgoing gain at t ~= 0.673648178. */
+    entry_delay_ms = (int64_t)((double)fade_ms * 0.6736481777);
+    if (entry_delay_ms < 1) entry_delay_ms = 1;
+    now_ms = monotonic_ms();
+    entry_ms = now_ms + entry_delay_ms;
+    release_ms = fade_ms + 50;
+    worker = &state->native_timing;
+
+    (void)pthread_mutex_lock(&state->lock);
+    from_deck = state->active_deck == 'B' ? 'B' : 'A';
+    from_track = *deck_for(state, from_deck);
+    target = *deck_for(state, to_deck);
+    if (!state->running) {
+        (void)pthread_mutex_unlock(&state->lock);
+        copy_text(error, error_size, "script interrupt requires a running engine");
+        return -1;
+    }
+    if (state->paused) {
+        (void)pthread_mutex_unlock(&state->lock);
+        copy_text(error, error_size, "script interrupt is not available while paused");
+        return -1;
+    }
+    if (state->transitioning || worker->transition_completion_pending) {
+        (void)pthread_mutex_unlock(&state->lock);
+        copy_text(error, error_size, "script interrupt cannot start during another transition");
+        return -1;
+    }
+    if (from_deck == to_deck) {
+        (void)pthread_mutex_unlock(&state->lock);
+        copy_text(error, error_size, "script interrupt target is already active");
+        return -1;
+    }
+    if (!from_track.loaded || !from_track.playback_started) {
+        (void)pthread_mutex_unlock(&state->lock);
+        copy_text(error, error_size, "script interrupt has no audible outgoing track");
+        return -1;
+    }
+    if (!identity_matches(&target, to_track) || !target.loaded || !target.analysis_ready) {
+        (void)pthread_mutex_unlock(&state->lock);
+        copy_text(error, error_size, "script interrupt target is not ready");
+        return -1;
+    }
+
+    state->transitioning = true;
+    deck_for(state, to_deck)->playback_started = true;
+    deck_for(state, to_deck)->consumed = false;
+    deck_for(state, to_deck)->terminal = false;
+    store_identity(
+        &worker->scheduled_for_queue_id,
+        worker->scheduled_for_slot_token,
+        &from_track
+    );
+    worker->transition_entry_pending = true;
+    worker->transition_entry_monotonic_ms = entry_ms;
+    worker->transition_script_interrupt = true;
+    worker->transition_completion_pending = true;
+    worker->transition_completion_monotonic_ms = now_ms + release_ms;
+    worker->transition_from_deck = from_deck;
+    worker->transition_to_deck = to_deck;
+    worker->transition_from_track = from_track;
+    worker->transition_to_track = target;
+    worker->transition_start_count += 1U;
+    (void)pthread_cond_broadcast(&worker->cond);
+    (void)pthread_mutex_unlock(&state->lock);
+
+    wb_icecast_output_prepare_delayed_entry(state, to_deck);
+    wb_icecast_output_transition_started(
+        state,
+        from_deck,
+        to_deck,
+        now_ms,
+        entry_ms,
+        release_ms,
+        fade_ms,
+        0,
+        50
+    );
+    (void)snprintf(
+        payload,
+        sizeof(payload),
+        "{\"native_timing_owner\":true,\"control_only\":false,"
+        "\"audio_enabled\":true,\"source\":\"native_transition_command\","
+        "\"script_interrupt\":true,\"from_deck\":\"%c\","
+        "\"fade_out_duration_ms\":%lld,\"release_duration_ms\":%lld,"
+        "\"entry_delay_ms\":%lld,\"entry_ramp_ms\":0,\"entry_gain\":1.0}",
+        from_deck,
+        (long long)fade_ms,
+        (long long)release_ms,
+        (long long)entry_delay_ms
+    );
+    (void)wb_engine_send_event(state, "transition_started", &target, to_deck, payload);
+    return 0;
+}
+
+static void start_pending_transition_entry(WbEngineState *state) {
+    WbNativeTimingWorker *worker = &state->native_timing;
+    WbDeckState to_track = {0};
+    WbDeckState from_track = {0};
+    char from_deck = '\0';
+    char to_deck = '\0';
+    int64_t scheduled_entry_ms = 0;
+    bool start_entry = false;
+    bool abort_entry = false;
+    char payload[768];
+
+    (void)pthread_mutex_lock(&state->lock);
+    if (
+        worker->transition_entry_pending
+        && worker->transition_script_interrupt
+        && monotonic_ms() >= worker->transition_entry_monotonic_ms
+    ) {
+        from_deck = worker->transition_from_deck;
+        to_deck = worker->transition_to_deck;
+        from_track = worker->transition_from_track;
+        to_track = worker->transition_to_track;
+        scheduled_entry_ms = worker->transition_entry_monotonic_ms;
+        if (
+            state->running
+            && state->transitioning
+            && identity_matches(deck_for(state, from_deck), &from_track)
+            && identity_matches(deck_for(state, to_deck), &to_track)
+        ) {
+            state->active_deck = to_deck;
+            deck_for(state, to_deck)->playback_started = true;
+            deck_for(state, to_deck)->consumed = false;
+            deck_for(state, to_deck)->terminal = false;
+            start_entry = true;
+        } else if (state->running) {
+            state->transitioning = false;
+            worker->transition_completion_pending = false;
+            worker->transition_completion_monotonic_ms = 0;
+            worker->transition_script_interrupt = false;
+            if (identity_matches(deck_for(state, to_deck), &to_track)) {
+                deck_for(state, to_deck)->playback_started = false;
+            }
+            abort_entry = true;
+        }
+        worker->transition_entry_pending = false;
+        worker->transition_entry_monotonic_ms = 0;
+    }
+    (void)pthread_mutex_unlock(&state->lock);
+    if (abort_entry) {
+        wb_icecast_output_transition_finished(state, from_deck);
+        (void)snprintf(
+            payload,
+            sizeof(payload),
+            "{\"native_timing_owner\":true,\"source\":\"native_script_interrupt_abort\","
+            "\"script_interrupt\":true,\"reason\":\"entry_identity_changed\"}"
+        );
+        (void)wb_engine_send_event(
+            state, "native_script_interrupt_aborted", &from_track, from_deck, payload
+        );
+        (void)wb_engine_send_event(
+            state, "transition_finished", &from_track, from_deck, payload
+        );
+        return;
+    }
+    if (!start_entry) return;
+
+    wb_icecast_output_activate_track(state, to_deck, &to_track);
+    wb_audio_probe_activate_deck(
+        state,
+        to_deck,
+        &to_track,
+        true,
+        scheduled_entry_ms > 0 ? scheduled_entry_ms : monotonic_ms()
+    );
+    (void)snprintf(
+        payload,
+        sizeof(payload),
+        "{\"native_timing_owner\":true,\"control_only\":false,"
+        "\"audio_enabled\":true,\"source\":\"native_transition_command\","
+        "\"script_interrupt\":true,\"from_deck\":\"%c\","
+        "\"entry_ramp_ms\":0,\"entry_gain\":1.0,"
+        "\"scheduled_entry_monotonic_ms\":%lld}",
+        from_deck,
+        (long long)scheduled_entry_ms
+    );
+    (void)wb_engine_send_event(state, "track_started", &to_track, to_deck, payload);
+}
+
 static void finish_native_transition(WbEngineState *state) {
     WbDeckState from_track = {0};
     WbDeckState to_track = {0};
     char from_deck = '\0';
     char to_deck = '\0';
     bool finish = false;
+    bool script_interrupt = false;
     char ended_payload[384];
     char finished_payload[384];
 
@@ -321,8 +529,12 @@ static void finish_native_transition(WbEngineState *state) {
         to_deck = state->native_timing.transition_to_deck;
         from_track = state->native_timing.transition_from_track;
         to_track = state->native_timing.transition_to_track;
+        script_interrupt = state->native_timing.transition_script_interrupt;
         state->native_timing.transition_completion_pending = false;
         state->native_timing.transition_completion_monotonic_ms = 0;
+        state->native_timing.transition_entry_pending = false;
+        state->native_timing.transition_entry_monotonic_ms = 0;
+        state->native_timing.transition_script_interrupt = false;
         state->transitioning = false;
         if (identity_matches(deck_for(state, from_deck), &from_track)) {
             deck_for(state, from_deck)->consumed = true;
@@ -344,8 +556,12 @@ static void finish_native_transition(WbEngineState *state) {
     (void)snprintf(
         finished_payload,
         sizeof(finished_payload),
-        "{\"native_timing_owner\":true,\"source\":\"native_timing_transition_complete\"," 
-        "\"from_deck\":\"%c\"}",
+        "{\"native_timing_owner\":true,\"source\":\"%s\"," 
+        "\"script_interrupt\":%s,\"from_deck\":\"%c\"}",
+        script_interrupt
+            ? "native_script_interrupt_transition_complete"
+            : "native_timing_transition_complete",
+        script_interrupt ? "true" : "false",
         from_deck
     );
     (void)wb_engine_send_event(
@@ -440,6 +656,7 @@ static void *timing_thread_main(void *context) {
         );
         (void)pthread_mutex_unlock(&state->lock);
 
+        start_pending_transition_entry(state);
         finish_native_transition(state);
         if (
             !running || paused || transitioning || !active.loaded
@@ -579,6 +796,9 @@ void wb_native_timing_reset(WbEngineState *state) {
     clear_identity(&worker->scheduled_for_queue_id, worker->scheduled_for_slot_token);
     worker->transition_completion_pending = false;
     worker->transition_completion_monotonic_ms = 0;
+    worker->transition_entry_pending = false;
+    worker->transition_entry_monotonic_ms = 0;
+    worker->transition_script_interrupt = false;
     (void)pthread_cond_broadcast(&worker->cond);
     (void)pthread_mutex_unlock(&state->lock);
 }

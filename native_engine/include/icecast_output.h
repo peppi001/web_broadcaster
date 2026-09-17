@@ -25,6 +25,7 @@ void wb_icecast_output_stop_track(
     int64_t queue_id,
     const char *slot_token
 );
+void wb_icecast_output_prepare_delayed_entry(WbEngineState *state, char deck);
 void wb_icecast_output_transition_started(
     WbEngineState *state,
     char from_deck,

@@ -31,6 +31,7 @@ class PlayerHandoffDependencies:
     same_queue_identity: Callable[[str, str], bool]
     start_transition: Callable[..., bool]
     wake_autodj_worker: Callable[[], None]
+    script_interrupt_fade_seconds: Callable[[str], float] = lambda _station: 5.0
 
 
 class PlayerHandoffService:
@@ -45,6 +46,7 @@ class PlayerHandoffService:
         *,
         reserved_queue_lines: Optional[Sequence[str]] = None,
         reservation_id: str = "",
+        script_interrupt: bool = False,
     ) -> Optional[dict[str, Any]]:
         station = str(station_key or self._deps.get_active_station_key() or "")
 
@@ -145,23 +147,58 @@ class PlayerHandoffService:
                 return generation
 
             generation = int(self._deps.mutate_player_state(reserve_plan) or 0)
+            script_fade = 0.0
+            if script_interrupt:
+                try:
+                    script_fade = max(
+                        0.05,
+                        float(self._deps.script_interrupt_fade_seconds(station) or 0.0),
+                    )
+                except Exception:
+                    script_fade = 5.0
+                try:
+                    position_ms = int(
+                        native_state.get("native_audio_probe_position_ms")
+                        or native_state.get("position_ms")
+                        or 0
+                    )
+                    effective_end_ms = int(
+                        native_state.get("native_audio_probe_effective_end_ms")
+                        or native_state.get("effective_end_ms")
+                        or 0
+                    )
+                    remaining_ms = effective_end_ms - position_ms
+                    if effective_end_ms > 0 and remaining_ms > 0:
+                        script_fade = min(script_fade, max(0.05, remaining_ms / 1000.0))
+                except Exception:
+                    pass
+
             direct_ok = self._deps.start_transition(
                 station,
                 active=active,
                 target=target_player,
                 current_index=current_index,
                 target_index=target_index,
-                fade=0.0,
+                fade=script_fade if script_interrupt else 0.0,
                 generation=generation,
-                reason="manual_next_db_head_direct_handoff",
-                manual_next_fast=True,
+                reason=(
+                    "script_interrupt_db_head_direct_handoff"
+                    if script_interrupt
+                    else "manual_next_db_head_direct_handoff"
+                ),
+                manual_next_fast=not script_interrupt,
+                script_interrupt=bool(script_interrupt),
                 manual_next_request_id=str(reservation_id or ""),
             )
             if direct_ok:
                 self._deps.wake_autodj_worker()
                 return {
                     "success": True,
-                    "mode": "manual_next_db_head_direct_handoff",
+                    "mode": (
+                        "script_interrupt_db_head_direct_handoff"
+                        if script_interrupt
+                        else "manual_next_db_head_direct_handoff"
+                    ),
                     "player": active,
                     "target_player": target_player,
                     "target_queue_id": int(target_qid or 0),
@@ -189,6 +226,7 @@ class ManualNextDependencies:
     signal_monitor_wake: Callable[[str, str], None]
     wake_autodj_worker: Callable[[], None]
     scheduled_script_url_active: Callable[[str], bool] = lambda _station: False
+    scheduled_script_scheduler_active: Callable[[str], bool] = lambda _station: False
     cancel_scheduled_script_queue: Callable[[str, Sequence[int], str], Any] = (
         lambda _station, _queue_ids, _reason: None
     )
@@ -334,45 +372,56 @@ class ManualNextOrchestrator:
             if str(value or "").strip().isdigit() and int(value) > 0
         ]
 
-        def scheduled_script_url_skip() -> Optional[dict[str, Any]]:
+        def scheduled_script_protected_playback_skip() -> Optional[dict[str, Any]]:
             if source != "script":
                 return None
             try:
-                active = bool(self._deps.scheduled_script_url_active(station))
+                scheduler_active = bool(self._deps.scheduled_script_scheduler_active(station))
             except Exception:
-                active = False
-            if not active:
+                scheduler_active = False
+            try:
+                url_active = bool(self._deps.scheduled_script_url_active(station))
+            except Exception:
+                url_active = False
+            if not scheduler_active and not url_active:
                 return None
+            reason = "scheduler_playback_active" if scheduler_active else "url_playback_active"
+            mode = (
+                "scheduled_script_skipped_scheduler_playback"
+                if scheduler_active
+                else "scheduled_script_skipped_url_playback"
+            )
             try:
                 self._deps.cancel_scheduled_script_queue(
                     station,
                     guarded_queue_ids,
-                    "url_playback_active",
+                    reason,
                 )
             except Exception:
                 pass
             self._deps.trace(
-                "scheduled_script_skipped_url_playback",
+                "scheduled_script_skipped_protected_playback",
                 station,
                 request_id,
                 action=action,
                 source=source,
-                reason="url_playback_active",
+                reason=reason,
                 guarded_queue_ids=list(guarded_queue_ids),
             )
             return {
                 "success": True,
                 "skipped": True,
-                "mode": "scheduled_script_skipped_url_playback",
-                "reason": "url_playback_active",
+                "mode": mode,
+                "reason": reason,
                 "request_id": request_id,
                 "source": source,
             }
 
+
         deck_lock = self.deck_plan_lock(station)
         with self._deps.station_runtime_context(station):
             with deck_lock:
-                skipped = scheduled_script_url_skip()
+                skipped = scheduled_script_protected_playback_skip()
                 if skipped is not None:
                     return skipped
                 queue_lines: list[str] = []
@@ -415,6 +464,53 @@ class ManualNextOrchestrator:
                     native_queue_id = int(native_state.get("queue_id") or 0)
                     if native_queue_id <= 0 or native_queue_id != int(target_qid):
                         break
+
+                    active_deck = str(native_state.get("active_deck") or "").strip().lower()
+                    active_phase = str(
+                        native_state.get(f"deck_{active_deck}_lifecycle_phase")
+                        if active_deck in {"a", "b"}
+                        else ""
+                    ).strip().lower()
+                    active_playback_started = bool(
+                        active_deck in {"a", "b"}
+                        and native_state.get(f"deck_{active_deck}_playback_started")
+                    )
+                    try:
+                        probe_queue_id = int(native_state.get("native_audio_probe_queue_id") or 0)
+                    except Exception:
+                        probe_queue_id = 0
+                    probe_status = str(
+                        native_state.get("native_audio_probe_status") or ""
+                    ).strip().lower()
+                    probe_matches_audible = bool(
+                        probe_queue_id == int(target_qid)
+                        and probe_status in {"decoding", "playing"}
+                    )
+                    target_is_audible = bool(
+                        (active_playback_started and active_phase == "playing")
+                        or probe_matches_audible
+                    )
+                    has_audibility_evidence = bool(
+                        active_deck in {"a", "b"}
+                        or probe_queue_id > 0
+                        or probe_status
+                    )
+                    if has_audibility_evidence and not target_is_audible:
+                        self._deps.trace(
+                            "manual_next_active_head_not_audible_recovery",
+                            station,
+                            request_id,
+                            action=action,
+                            source=source,
+                            target_queue_id=int(target_qid),
+                            active_deck=active_deck.upper(),
+                            active_phase=active_phase,
+                            active_playback_started=active_playback_started,
+                            probe_queue_id=int(probe_queue_id),
+                            probe_status=probe_status,
+                        )
+                        break
+
                     if time.monotonic() >= active_head_deadline:
                         self._deps.trace(
                             "manual_next_rejected",
@@ -472,15 +568,17 @@ class ManualNextOrchestrator:
                         "target_queue_id": target_qid,
                     }
 
-                skipped = scheduled_script_url_skip()
+                skipped = scheduled_script_protected_playback_skip()
                 if skipped is not None:
                     return skipped
 
-                direct = self._deps.perform_direct_handoff(
-                    station,
-                    reserved_queue_lines=queue_lines,
-                    reservation_id=request_id,
-                )
+                handoff_kwargs = {
+                    "reserved_queue_lines": queue_lines,
+                    "reservation_id": request_id,
+                }
+                if source == "script":
+                    handoff_kwargs["script_interrupt"] = True
+                direct = self._deps.perform_direct_handoff(station, **handoff_kwargs)
                 if not direct or not bool(direct.get("success")):
                     error = str((direct or {}).get("error") or "manual_next_handoff_failed")
                     self._deps.trace(

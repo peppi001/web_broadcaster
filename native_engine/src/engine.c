@@ -770,6 +770,8 @@ int wb_engine_send_ready(WbEngineState *state, int client_fd, const char *socket
     return wb_send_line(client_fd, line);
 }
 
+static const char *deck_lifecycle_phase(const WbDeckState *deck);
+
 typedef struct {
     bool running;
     bool activated;
@@ -923,6 +925,8 @@ static int send_state_reply(WbEngineState *state, int fd, int64_t request_id) {
     char active_analysis_error[WB_ANALYSIS_ERROR_SIZE * 2];
     char deck_a_analysis_source[WB_ANALYSIS_SOURCE_SIZE * 2];
     char deck_b_analysis_source[WB_ANALYSIS_SOURCE_SIZE * 2];
+    char deck_a_analysis_error[WB_ANALYSIS_ERROR_SIZE * 2];
+    char deck_b_analysis_error[WB_ANALYSIS_ERROR_SIZE * 2];
     char line[262144];
     WbDeckState active;
     WbDeckState next;
@@ -938,6 +942,12 @@ static int send_state_reply(WbEngineState *state, int fd, int64_t request_id) {
     bool paused;
     bool accepting_loads;
     bool transitioning;
+    bool hard_handoff_armed;
+    char hard_handoff_from_deck;
+    char hard_handoff_to_deck;
+    int64_t hard_handoff_to_queue_id;
+    char hard_handoff_to_slot_token[WB_SLOT_TOKEN_SIZE];
+    char escaped_hard_handoff_to_slot_token[WB_SLOT_TOKEN_SIZE * 2];
     bool audio_enabled;
     bool audio_realtime;
     uint64_t live_sync_count;
@@ -1042,10 +1052,21 @@ static int send_state_reply(WbEngineState *state, int fd, int64_t request_id) {
     wb_json_escape(active.analysis_error, active_analysis_error, sizeof(active_analysis_error));
     wb_json_escape(deck_a.analysis_source, deck_a_analysis_source, sizeof(deck_a_analysis_source));
     wb_json_escape(deck_b.analysis_source, deck_b_analysis_source, sizeof(deck_b_analysis_source));
+    wb_json_escape(deck_a.analysis_error, deck_a_analysis_error, sizeof(deck_a_analysis_error));
+    wb_json_escape(deck_b.analysis_error, deck_b_analysis_error, sizeof(deck_b_analysis_error));
     if (wb_icecast_output_state_json(state, icecast_state_json, sizeof(icecast_state_json)) < 0) {
         copy_text(icecast_state_json, sizeof(icecast_state_json), "{\"supported\":false}");
     }
     (void)pthread_mutex_lock(&state->icecast_output.lock);
+    hard_handoff_armed = state->icecast_output.hard_handoff_pending;
+    hard_handoff_from_deck = state->icecast_output.hard_handoff_from_deck;
+    hard_handoff_to_deck = state->icecast_output.hard_handoff_to_deck;
+    hard_handoff_to_queue_id = state->icecast_output.hard_handoff_to_track.queue_id;
+    copy_text(
+        hard_handoff_to_slot_token,
+        sizeof(hard_handoff_to_slot_token),
+        state->icecast_output.hard_handoff_to_track.slot_token
+    );
     if (!state->icecast_output.dsp_enabled) {
         copy_text(dsp_state, sizeof(dsp_state), "bypassed");
     } else if (state->icecast_output.dsp_status[0] != '\0') {
@@ -1058,6 +1079,11 @@ static int send_state_reply(WbEngineState *state, int fd, int64_t request_id) {
         copy_text(dsp_state, sizeof(dsp_state), "stopped");
     }
     (void)pthread_mutex_unlock(&state->icecast_output.lock);
+    wb_json_escape(
+        hard_handoff_to_slot_token,
+        escaped_hard_handoff_to_slot_token,
+        sizeof(escaped_hard_handoff_to_slot_token)
+    );
     wb_json_escape(dsp_state, escaped_dsp_state, sizeof(escaped_dsp_state));
 
     (void)snprintf(
@@ -1072,12 +1098,19 @@ static int send_state_reply(WbEngineState *state, int fd, int64_t request_id) {
         "\"queue_id\":%lld,\"slot_token\":\"%s\","
         "\"next_queue_id\":%lld,\"next_slot_token\":\"%s\","
         "\"deck_a_queue_id\":%lld,\"deck_a_slot_token\":\"%s\","
+        "\"deck_a_consumed\":%s,\"deck_a_terminal\":%s,"
+        "\"deck_a_playback_started\":%s,\"deck_a_lifecycle_phase\":\"%s\","
         "\"deck_b_queue_id\":%lld,\"deck_b_slot_token\":\"%s\","
+        "\"deck_b_consumed\":%s,\"deck_b_terminal\":%s,"
+        "\"deck_b_playback_started\":%s,\"deck_b_lifecycle_phase\":\"%s\","
         "\"deck_a_load_pending\":%s,\"deck_a_planned_queue_id\":%lld,"
         "\"deck_a_planned_slot_token\":\"%s\","
         "\"deck_b_load_pending\":%s,\"deck_b_planned_queue_id\":%lld,"
         "\"deck_b_planned_slot_token\":\"%s\","
-        "\"transitioning\":%s,\"live_sync_count\":%llu,"
+        "\"transitioning\":%s,"
+        "\"hard_handoff_armed\":%s,\"hard_handoff_from_deck\":\"%c\","
+        "\"hard_handoff_to_deck\":\"%c\",\"hard_handoff_to_queue_id\":%lld,"
+        "\"hard_handoff_to_slot_token\":\"%s\",\"live_sync_count\":%llu,"
         "\"planned_load_count\":%llu,\"confirmed_load_count\":%llu,"
         "\"cancelled_load_count\":%llu,\"late_load_rejected_count\":%llu,\"late_event_ignored_count\":%llu,\"audio_candidate_evicted_count\":%llu,\"audio_candidate_cancelled_count\":%llu,\"audio_runtime_mismatch_count\":%llu,\"audio_runtime_mismatch_total_count\":%llu,\"audio_runtime_mismatch_recovered_count\":%llu,\"last_live_event\":\"%s\","
         "\"last_live_event_monotonic_ms\":%lld,\"last_live_event_wall_time_unix_ms\":%lld,"
@@ -1129,10 +1162,12 @@ static int send_state_reply(WbEngineState *state, int fd, int64_t request_id) {
         "\"native_analysis_transition_at_ms\":%lld,\"native_analysis_effective_end_ms\":%lld,"
         "\"native_analysis_source_end_ms\":%lld,\"native_analysis_short_no_crossfade\":%s,"
         "\"native_analysis_ignored_artifact_ms\":%lld,\"native_analysis_trailing_silence_ms\":%lld,"
-        "\"native_deck_a_analysis_ready\":%s,\"native_deck_a_analysis_source\":\"%s\","
+        "\"native_deck_a_analysis_ready\":%s,\"native_deck_a_analysis_failed\":%s,"
+        "\"native_deck_a_analysis_source\":\"%s\",\"native_deck_a_analysis_error\":\"%s\","
         "\"native_deck_a_analysis_transition_at_ms\":%lld,\"native_deck_a_analysis_effective_end_ms\":%lld,"
         "\"native_deck_a_short_no_crossfade\":%s,"
-        "\"native_deck_b_analysis_ready\":%s,\"native_deck_b_analysis_source\":\"%s\","
+        "\"native_deck_b_analysis_ready\":%s,\"native_deck_b_analysis_failed\":%s,"
+        "\"native_deck_b_analysis_source\":\"%s\",\"native_deck_b_analysis_error\":\"%s\","
         "\"native_deck_b_analysis_transition_at_ms\":%lld,\"native_deck_b_analysis_effective_end_ms\":%lld,"
         "\"native_deck_b_short_no_crossfade\":%s,"
         "\"native_next_track_request_count\":%llu,\"native_hard_handoff_arm_count\":%llu,"
@@ -1162,8 +1197,16 @@ static int send_state_reply(WbEngineState *state, int fd, int64_t request_id) {
         next_slot,
         (long long)deck_a.queue_id,
         deck_a_slot,
+        deck_a.consumed ? "true" : "false",
+        deck_a.terminal ? "true" : "false",
+        deck_a.playback_started ? "true" : "false",
+        deck_lifecycle_phase(&deck_a),
         (long long)deck_b.queue_id,
         deck_b_slot,
+        deck_b.consumed ? "true" : "false",
+        deck_b.terminal ? "true" : "false",
+        deck_b.playback_started ? "true" : "false",
+        deck_lifecycle_phase(&deck_b),
         planned_a.loaded ? "true" : "false",
         (long long)planned_a.queue_id,
         planned_a_slot,
@@ -1171,6 +1214,11 @@ static int send_state_reply(WbEngineState *state, int fd, int64_t request_id) {
         (long long)planned_b.queue_id,
         planned_b_slot,
         transitioning ? "true" : "false",
+        hard_handoff_armed ? "true" : "false",
+        hard_handoff_from_deck ? hard_handoff_from_deck : '-',
+        hard_handoff_to_deck ? hard_handoff_to_deck : '-',
+        (long long)hard_handoff_to_queue_id,
+        escaped_hard_handoff_to_slot_token,
         (unsigned long long)live_sync_count,
         (unsigned long long)planned_load_count,
         (unsigned long long)confirmed_load_count,
@@ -1262,12 +1310,16 @@ static int send_state_reply(WbEngineState *state, int fd, int64_t request_id) {
         (long long)active.analysis_ignored_artifact_ms,
         (long long)active.analysis_trailing_silence_ms,
         deck_a.analysis_ready ? "true" : "false",
+        deck_a.analysis_failed ? "true" : "false",
         deck_a_analysis_source,
+        deck_a_analysis_error,
         (long long)deck_a.transition_at_ms,
         (long long)deck_a.effective_end_ms,
         deck_a.short_no_crossfade ? "true" : "false",
         deck_b.analysis_ready ? "true" : "false",
+        deck_b.analysis_failed ? "true" : "false",
         deck_b_analysis_source,
+        deck_b_analysis_error,
         (long long)deck_b.transition_at_ms,
         (long long)deck_b.effective_end_ms,
         deck_b.short_no_crossfade ? "true" : "false",
@@ -1280,6 +1332,14 @@ static int send_state_reply(WbEngineState *state, int fd, int64_t request_id) {
         audio_enabled ? "true" : "false"
     );
     return state_send_line(state, fd, line);
+}
+
+static const char *deck_lifecycle_phase(const WbDeckState *deck) {
+    if (deck == NULL || !deck->loaded) return "empty";
+    if (deck->terminal || deck->consumed || deck->analysis_failed) return "terminal";
+    if (deck->playback_started) return "playing";
+    if (deck->analysis_requested && !deck->analysis_ready) return "loading";
+    return "ready";
 }
 
 static int handle_get_state(WbEngineState *state, int fd, int64_t request_id) {
@@ -1326,9 +1386,14 @@ static int handle_load(WbEngineState *state, int fd, int64_t request_id, const c
     bool stream_infinite = false;
     int64_t stream_duration_ms = 0;
     bool clear_slot = false;
+    bool reject_if_active_deck = false;
+    bool reject_if_playback_started = false;
     bool deduplicated = false;
     bool superseded = false;
     bool rejected_after_stop = false;
+    bool rejected_active_deck = false;
+    bool rejected_playback_started = false;
+    bool rejected_hard_handoff_target = false;
     char deck;
     WbDeckState snapshot = {0};
     WbDeckState superseded_snapshot = {0};
@@ -1376,6 +1441,8 @@ static int handle_load(WbEngineState *state, int fd, int64_t request_id, const c
     (void)wb_json_get_double(track_json, "crossfade_trigger_relative_db", &crossfade_trigger_relative_db);
     if (wb_json_get_object(line, "options", options_json, sizeof(options_json))) {
         (void)wb_json_get_bool(options_json, "clear_slot", &clear_slot);
+        (void)wb_json_get_bool(options_json, "reject_if_active_deck", &reject_if_active_deck);
+        (void)wb_json_get_bool(options_json, "reject_if_playback_started", &reject_if_playback_started);
     }
     if (queue_id <= 0 && slot_token[0] == '\0' && path[0] == '\0') {
         return send_context_error(state, fd, request_id, "track object has no usable identity");
@@ -1388,9 +1455,54 @@ static int handle_load(WbEngineState *state, int fd, int64_t request_id, const c
     } else {
         WbDeckState *planned = planned_deck_for(state, deck);
         WbDeckState *confirmed = deck_for(state, deck);
+        bool hard_handoff_target_conflict = false;
+        (void)pthread_mutex_lock(&state->icecast_output.lock);
+        hard_handoff_target_conflict = (
+            state->icecast_output.hard_handoff_pending
+            && state->icecast_output.hard_handoff_to_deck == deck
+            && state->icecast_output.hard_handoff_to_track.loaded
+            && !(
+                state->icecast_output.hard_handoff_to_track.queue_id == queue_id
+                && strcmp(
+                    state->icecast_output.hard_handoff_to_track.slot_token,
+                    slot_token
+                ) == 0
+            )
+        );
+        (void)pthread_mutex_unlock(&state->icecast_output.lock);
         if (identity_matches(confirmed, queue_id, slot_token)) {
             snapshot = *confirmed;
             deduplicated = true;
+        } else if (hard_handoff_target_conflict) {
+            /* Once a hard handoff is armed, its destination descriptor belongs
+             * to the scheduled switch until the boundary completes or the
+             * handoff is cancelled. Replacing it would split control identity
+             * from the PCM candidate that is already primed for that switch. */
+            rejected_hard_handoff_target = true;
+        } else if (
+            reject_if_playback_started
+            && state->running
+            && confirmed->loaded
+            && confirmed->playback_started
+            && !confirmed->terminal
+            && !confirmed->consumed
+        ) {
+            /* Queue mutation and scripted/manual interruption loads must never
+             * replace the descriptor of either an active voice or the outgoing
+             * voice of a crossfade.  The audio probe has two candidate slots,
+             * but control-plane identity must stay attached to audible PCM until
+             * that voice is released. */
+            rejected_playback_started = true;
+        } else if (
+            reject_if_active_deck
+            && state->running
+            && state->active_deck == deck
+            && confirmed->loaded
+            && confirmed->playback_started
+        ) {
+            /* A control-plane race must never overwrite the descriptor of PCM
+             * that is already audible from the active deck. */
+            rejected_active_deck = true;
         } else {
             if (planned->loaded) {
                 superseded_snapshot = *planned;
@@ -1464,6 +1576,24 @@ static int handle_load(WbEngineState *state, int fd, int64_t request_id, const c
         return send_context_reply(
             state, fd, request_id,
             "{\"accepted\":false,\"control_only\":false,\"load_state\":\"rejected\",\"reason\":\"engine_stopped\"}"
+        );
+    }
+    if (rejected_hard_handoff_target) {
+        return send_context_reply(
+            state, fd, request_id,
+            "{\"accepted\":false,\"control_only\":false,\"load_state\":\"rejected\",\"reason\":\"hard_handoff_target_reserved\"}"
+        );
+    }
+    if (rejected_playback_started) {
+        return send_context_reply(
+            state, fd, request_id,
+            "{\"accepted\":false,\"control_only\":false,\"load_state\":\"rejected\",\"reason\":\"deck_playback_in_use\"}"
+        );
+    }
+    if (rejected_active_deck) {
+        return send_context_reply(
+            state, fd, request_id,
+            "{\"accepted\":false,\"control_only\":false,\"load_state\":\"rejected\",\"reason\":\"active_deck_in_use\"}"
         );
     }
 
@@ -1550,6 +1680,7 @@ static bool wait_for_analysis_ready(
     WbDeckState *ready_track
 ) {
     if (track == NULL || !track->loaded) return false;
+    if (track->analysis_failed || track->terminal || track->consumed) return false;
     if (!track->analysis_requested || track->analysis_ready || track->manual_timing) {
         if (ready_track != NULL) *ready_track = *track;
         return true;
@@ -1860,6 +1991,61 @@ static int handle_transition(WbEngineState *state, int fd, int64_t request_id, c
     );
 }
 
+static int handle_script_interrupt(WbEngineState *state, int fd, int64_t request_id, const char *line) {
+    char deck_text[8] = "A";
+    char deck;
+    double duration = 0.0;
+    int64_t fade_ms;
+    WbDeckState target = {0};
+    char error[WB_ICECAST_ERROR_SIZE] = "";
+    char result[384];
+
+    (void)wb_json_get_string(line, "deck", deck_text, sizeof(deck_text));
+    (void)wb_json_get_double(line, "duration", &duration);
+    if (duration < 0.05) duration = 0.05;
+    deck = normalized_deck(deck_text);
+    fade_ms = (int64_t)(duration * 1000.0);
+    if (fade_ms < 50) fade_ms = 50;
+
+    (void)pthread_mutex_lock(&state->lock);
+    target = *deck_for(state, deck);
+    (void)pthread_mutex_unlock(&state->lock);
+    if (!target.loaded) {
+        return send_context_error(state, fd, request_id, "script interrupt target deck is not loaded");
+    }
+    if (!wait_for_analysis_ready(state, deck, &target, &target)) {
+        return send_context_error(state, fd, request_id, "script interrupt target analysis is not ready");
+    }
+    (void)pthread_mutex_lock(&state->lock);
+    if (!identity_matches(deck_for(state, deck), target.queue_id, target.slot_token)) {
+        (void)pthread_mutex_unlock(&state->lock);
+        return send_context_error(state, fd, request_id, "script interrupt target changed while analysis was pending");
+    }
+    (void)pthread_mutex_unlock(&state->lock);
+
+    if (wb_native_timing_start_script_interrupt(
+            state, deck, &target, fade_ms, error, sizeof(error)
+        ) != 0) {
+        return send_context_error(
+            state,
+            fd,
+            request_id,
+            error[0] != '\0' ? error : "script interrupt could not be started"
+        );
+    }
+
+    (void)snprintf(
+        result,
+        sizeof(result),
+        "{\"accepted\":true,\"control_only\":false,\"script_interrupt\":true,"
+        "\"fade_out_duration_ms\":%lld,\"entry_delay_ms\":%lld,"
+        "\"entry_ramp_ms\":0,\"entry_gain\":1.0}",
+        (long long)fade_ms,
+        (long long)((double)fade_ms * 0.6367425089)
+    );
+    return send_context_reply(state, fd, request_id, result);
+}
+
 static bool event_has_track_identity(const char *event) {
     return strcmp(event, "deck_loaded") == 0
         || strcmp(event, "track_started") == 0
@@ -2101,6 +2287,9 @@ static int handle_sync_event(WbEngineState *state, int fd, int64_t request_id, c
         prepare_audio_probe = true;
     }
     if (deck != '\0' && strcmp(source_event, "track_started") == 0) {
+        deck_for(state, deck)->playback_started = true;
+        deck_for(state, deck)->consumed = false;
+        deck_for(state, deck)->terminal = false;
         if (!audio_track.loaded) audio_track = *deck_for(state, deck);
         activate_audio_probe = true;
     } else if (deck != '\0' && strcmp(source_event, "track_seeked") == 0) {
@@ -2423,6 +2612,9 @@ int wb_engine_handle_line(WbEngineState *state, int client_fd, const char *line)
     }
     if (strcmp(command, "transition") == 0) {
         return handle_transition(state, client_fd, request_id, line);
+    }
+    if (strcmp(command, "script_interrupt") == 0) {
+        return handle_script_interrupt(state, client_fd, request_id, line);
     }
     if (strcmp(command, "sync_event") == 0) {
         return handle_sync_event(state, client_fd, request_id, line);

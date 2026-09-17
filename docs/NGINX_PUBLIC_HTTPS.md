@@ -1,6 +1,6 @@
 # Web Broadcaster public HTTPS deployment with nginx
 
-This document describes the recommended public Internet deployment for Web Broadcaster v6042 when nginx runs on the same Linux host as Web Broadcaster and a real public domain name is available.
+This document describes the recommended public Internet deployment for Web Broadcaster v6049 when nginx runs on the same Linux host as Web Broadcaster and a real public domain name is available.
 
 For the complete deployment-mode overview, including direct LAN-only operation without nginx, a domain, or TLS, read `DEPLOYMENT_GUIDE.md` first.
 
@@ -18,7 +18,7 @@ nginx
 127.0.0.1:15000
    |
    v
-Web Broadcaster v6042
+Web Broadcaster v6049
 ```
 
 Web Broadcaster must not be exposed directly on TCP 15000 in this mode. nginx is the only public HTTP/HTTPS endpoint.
@@ -32,7 +32,7 @@ You need:
 - nginx installed on the same host as Web Broadcaster;
 - inbound TCP 80 and TCP 443 reaching nginx;
 - Certbot with the nginx plugin;
-- a built Web Broadcaster v6042 Linux package.
+- a built Web Broadcaster v6049 Linux package.
 
 The examples below assume Debian 12 or Raspberry Pi OS based on Debian 12. Run commands with an account that has `sudo` access.
 

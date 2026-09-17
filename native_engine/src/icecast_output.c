@@ -146,6 +146,7 @@ static double wb_fade_out_gain_at(double elapsed_ms, int64_t fade_out_ms) {
 
 static double wb_entry_gain_at(double elapsed_ms, int64_t entry_ramp_ms) {
     double progress;
+    if (elapsed_ms < 0.0) return 0.0;
     if (entry_ramp_ms <= 0) return 1.0;
     if (elapsed_ms <= 0.0) return 0.0;
     if (elapsed_ms >= (double)entry_ramp_ms) return 1.0;
@@ -3177,6 +3178,27 @@ void wb_icecast_output_activate_track(WbEngineState *state, char deck, const WbD
     }
 }
 
+void wb_icecast_output_prepare_delayed_entry(WbEngineState *state, char deck) {
+    WbIcecastOutput *output = &state->icecast_output;
+    (void)pthread_mutex_lock(&output->lock);
+    reset_fifo_locked(output, deck);
+    if (deck == 'B') {
+        output->deck_b_started = false;
+        output->deck_b_slot_token[0] = '\0';
+        output->deck_b_queue_id = 0;
+        output->deck_b_seek_pending = false;
+        output->deck_b_seek_slot_token[0] = '\0';
+    } else {
+        output->deck_a_started = false;
+        output->deck_a_slot_token[0] = '\0';
+        output->deck_a_queue_id = 0;
+        output->deck_a_seek_pending = false;
+        output->deck_a_seek_slot_token[0] = '\0';
+    }
+    (void)pthread_cond_broadcast(&output->cond);
+    (void)pthread_mutex_unlock(&output->lock);
+}
+
 
 void wb_icecast_output_seek_track(
     WbEngineState *state,
@@ -3349,6 +3371,33 @@ int wb_icecast_output_schedule_hard_handoff(
     }
     output = &state->icecast_output;
     primed_bytes -= primed_bytes % WB_AUDIO_FRAME_BYTES;
+
+    /* Serialize hard-handoff arming against destructive deck loads. The target
+     * snapshot was captured before decoder priming; revalidate both confirmed
+     * control identities under the engine lock before publishing the output
+     * reservation. A concurrent load therefore either finishes first and makes
+     * this arm fail, or waits until hard_handoff_pending is visible and is then
+     * rejected by handle_load. */
+    (void)pthread_mutex_lock(&state->lock);
+    {
+        const WbDeckState *from_live = from_deck == 'B' ? &state->deck_b : &state->deck_a;
+        const WbDeckState *to_live = to_deck == 'B' ? &state->deck_b : &state->deck_a;
+        valid = state->running
+            && from_live->loaded
+            && to_live->loaded
+            && from_live->queue_id == from_track->queue_id
+            && to_live->queue_id == to_track->queue_id
+            && strcmp(from_live->slot_token, from_track->slot_token) == 0
+            && strcmp(to_live->slot_token, to_track->slot_token) == 0;
+    }
+    if (!valid) {
+        (void)pthread_mutex_unlock(&state->lock);
+        if (error != NULL && error_size > 0U) {
+            copy_text(error, error_size, "hard handoff control identity changed");
+        }
+        return -1;
+    }
+
     (void)pthread_mutex_lock(&output->lock);
     from_token = from_deck == 'B' ? output->deck_b_slot_token : output->deck_a_slot_token;
     from_queue_id = from_deck == 'B' ? output->deck_b_queue_id : output->deck_a_queue_id;
@@ -3357,6 +3406,7 @@ int wb_icecast_output_schedule_hard_handoff(
         && from_queue_id == from_track->queue_id;
     if (!valid) {
         (void)pthread_mutex_unlock(&output->lock);
+        (void)pthread_mutex_unlock(&state->lock);
         if (error != NULL && error_size > 0U) {
             copy_text(error, error_size, "active outgoing identity changed");
         }
@@ -3400,6 +3450,7 @@ int wb_icecast_output_schedule_hard_handoff(
             output->deck_a_queue_id = 0;
         }
         (void)pthread_mutex_unlock(&output->lock);
+        (void)pthread_mutex_unlock(&state->lock);
         if (error != NULL && error_size > 0U) {
             copy_text(error, error_size, "target prime FIFO rejected PCM");
         }
@@ -3430,6 +3481,7 @@ int wb_icecast_output_schedule_hard_handoff(
     mirror_default_stream_locked(output);
     (void)pthread_cond_broadcast(&output->cond);
     (void)pthread_mutex_unlock(&output->lock);
+    (void)pthread_mutex_unlock(&state->lock);
     return 0;
 }
 
@@ -3999,6 +4051,14 @@ int wb_icecast_output_configure(
     defer_dsp_shutdown = pipeline_live && enabled_after == 0U;
     live_add_candidate = pipeline_live && !was_enabled && enabled
         && !dsp_configuration_changed;
+    if (live_add_candidate) {
+        /* Publish a complete live-branch watchdog state atomically with
+         * enabled=true. The watchdog may run before add_live_encoder_branch()
+         * gets CPU time, so a zero/stale timestamp here would falsely report
+         * an encoder stall and restart the shared on-air pipeline. */
+        stream->encoder_ready = false;
+        stream->last_encoded_data_monotonic_ms = monotonic_ms();
+    }
     live_remove_candidate = pipeline_live && was_enabled && !enabled
         && enabled_after > 0U && !dsp_configuration_changed;
     full_restart_required = output->engine_running && output->encoder_running && (

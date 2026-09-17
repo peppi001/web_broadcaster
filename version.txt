@@ -5101,3 +5101,286 @@ v6042 - 2026-08-16
 - Added a real FFmpeg 7.1.5 malformed-ID3 regression using COMM, TENC, TCOP and TOPE frames with invalid UTF-16 BOM data. The observed metadata noise must be absent while genuine MP3/libav probe errors remain visible.
 - Kept the v6035 embedded artist/title priority, nginx/HTTPS deployment, audio PCM path, DSP, encoder, queue, scheduler, database and Studio UI behavior unchanged.
 - Updated APP_VERSION and native daemon version to 6042.
+
+
+v6043 - 2026-08-17
+-------------------
+- Fixed long-running Cheroot connection cleanup after Raspberry Pi 5 testing exposed repeated `Exception ignored in: <function IOBase.__del__>` / `OSError: [Errno 9] Bad file descriptor` tracebacks from `cheroot/makefile.py` while a buffered response writer was finalized after its socket descriptor had already been closed.
+- Added a Web Broadcaster Cheroot connection subclass that explicitly closes the buffered Cheroot response writer before the base HTTPConnection closes the read stream and transport socket. This prevents delayed IOBase finalization from retrying a flush against a dead descriptor.
+- Normal client-disconnect conditions during the writer close (`EBADF`, `EPIPE`, `ECONNRESET`, `ECONNABORTED`, `ENOTCONN`, and `ESHUTDOWN` where available) are treated as terminal connection cleanup and remain silent; unexpected writer-close errors are still propagated after the base Cheroot cleanup runs.
+- Added deterministic regressions for close ordering, expected-disconnect suppression, unexpected-error visibility, and the pure-Python buffered-writer finalizer path that produced the observed `IOBase.__del__` traceback. The official buildkit also verifies that the installed Cheroot server receives the custom ConnectionClass.
+- Kept Cheroot pinned at 11.1.2 and kept the v6042 malformed-ID3 filtering, nginx/HTTPS deployment, authentication/security controls, audio PCM path, DSP, encoder, queue, scheduler, database and Studio UI behavior unchanged.
+- Updated APP_VERSION and native daemon version to 6043.
+
+v6044 - 2026-08-19
+-------------------
+- Generalized the harmless malformed-metadata frame-skip filter after long-running v6042 testing exposed FFmpeg 7.1.5 diagnostics using longer normalized metadata labels: `LYRICIST`, `MIXARTIST` and `INVOLVEDPEOPLE`.
+- The native libav callback now suppresses the exact FFmpeg parser format `Error reading frame %s, skipped` regardless of the length of the variadic metadata label. The format match remains exact, so unrelated libav/container/decoder/encoder/I/O errors continue to the default callback unchanged.
+- The process-console second line of defense now accepts the same longer uppercase-alphanumeric/underscore metadata labels (1-64 bytes) while still requiring the exact `Error reading frame ... , skipped` record shape.
+- Added regression coverage for the three production-observed long labels and for unrelated libav error visibility; retained the v6043 Cheroot writer-before-socket cleanup unchanged.
+- Kept nginx/HTTPS deployment, authentication/security controls, database schema, audio PCM path, SoundSolution DSP, encoders, queue, scheduler and Studio UI behavior unchanged.
+- Updated APP_VERSION and native daemon version to 6044.
+
+v6045 - 2026-08-31
+-------------------
+- Fixed long local music files failing to start or preload while native full-file PCM analysis was still running beyond the A/B prebuffer guard.
+- Local tracks with a known duration of at least 10 minutes now use an immediate native long-track fallback: playback is prepared from the trusted physical duration and the configured fallback crossfade window instead of blocking on full-file 10 ms analysis.
+- Kept full native PCM start/end analysis unchanged for tracks shorter than 10 minutes, and kept manual/script timing overrides unchanged.
+- Added regression coverage that locks the 600-second fallback threshold to the existing long-track runtime grace and verifies the fallback is applied before full-file decode starts.
+- The fallback is reported as `native_long_track_fallback`; normal decoder, container, metadata, DSP, encoder, queue, scheduler, Studio UI and deployment behavior remains unchanged.
+- Updated APP_VERSION and native daemon version to 6045.
+
+
+v6046 - 2026-08-31
+-------------------
+- Fixed native station startup diagnostics for Studio control actions: `/api/control` now uses the station orchestration service result directly instead of discarding its HTTP error payload and replacing it with the generic `The native station could not be started for this control action.` exception.
+- Failed Play/Pause/Next startup requests now preserve the concrete station-service cause and append the A/B `bootstrap detail` when available; expected startup failures return HTTP 503 with one concise ERROR log entry instead of printing the same Python traceback twice. Unexpected control exceptions still keep their normal traceback.
+- Suppressed the exact recoverable MP3 frame diagnostics emitted by FFmpeg 7.1.5 (`invalid new backstep`, `big_values too big`, `invalid block type`, and `Error while decoding MPEG audio frame.`) only for `mp3`/`mp3float` decoder contexts. These messages correspond to isolated AVERROR_INVALIDDATA frames already handled by the bounded native corrupt-input recovery path.
+- Mirrored the same narrow MP3 corruption filter in the process-console fallback so inherited native stderr cannot flood the terminal, systemd stream or Settings Console; unrelated libav/container/decoder/encoder/I/O errors remain visible.
+- Added regressions for station-start root-cause propagation, duplicate traceback removal, exact process-console matching and the native libav callback while preserving the v6045 long-track fallback and existing 256-error corrupt-input guard.
+- Updated APP_VERSION and native daemon version to 6046.
+
+v6047 - 2026-08-31
+-------------------
+- Replaced the v6045 immediate-only long-track analysis fallback with bounded native PCM analysis for local tracks of at least 10 minutes.
+- Long tracks now analyze the first 60 seconds and the final 120 seconds only; libav seeks directly to the tail sample so the middle of the file is not decoded for analysis and total analysis work is capped at three minutes of PCM.
+- Restored PCM-derived cue-in detection, trailing-silence/effective-end detection, tail artifact handling and dynamic crossfade timing for long music while preserving the trusted physical duration boundary.
+- Kept `native_long_track_fallback` as a safety path if either bounded sample cannot be decoded; normal tracks shorter than 10 minutes continue to use unchanged full-file native PCM analysis.
+- Added source and real 601-second sparse-audio regressions proving that the long-track path detects a 2-second leading gap and a 3-second trailing gap, prepares a PCM-backed deck, and completes within the existing startup guard.
+- Updated APP_VERSION and native daemon version to 6047.
+
+v6048 - 2026-09-03
+-------------------
+- Added persistent provenance to Scheduler-origin queue items: Scheduler insertions are tagged in the companion `queue_item_metadata` table and the origin is carried into native local-file and HTTP/HTTPS deck descriptors without adding upgrade ALTER statements to existing station databases.
+- Extended the scheduled-script interruption guard so exact-time scripts never issue a disruptive Next while a Scheduler-origin item is currently audible, regardless of whether that item is a local file or an Internet stream.
+- Protected Scheduler playback uses the same no-catch-up behavior as the existing URL guard: the due script occurrence is consumed, script-created queue rows are rolled back if necessary, and the missed announcement is not replayed later.
+- Preserved queue provenance through now-playing state and seek-restart descriptors so a Scheduler-origin track remains protected after its original queue row has been committed/deleted and while seeking within the active track.
+- Kept manual Next/Stop behavior unchanged; the new protection applies only to scheduled station-script interruption. Added regressions for provenance persistence, local/stream descriptors, Scheduler detection and the serialized late-race guard while retaining the v6017 URL protection.
+- Updated APP_VERSION and native daemon version to 6048.
+
+
+v6049 - 2026-09-03
+-------------------
+- Added physical-file replacement detection for existing local track paths so Scheduler Add Dir rules can keep the same directory and filenames while media files are replaced between runs.
+- `ensure_track()` now records the local file size and nanosecond modification timestamp in the existing analysis fingerprint fields and compares that identity every time a file path is resolved.
+- When the same path points to a changed physical file, file-specific cue, audio-boundary, analyzer and runtime-duration state is invalidated before the new file is queued, then Mutagen immediately refreshes the provisional full duration. Native PCM analysis still runs normally on load and refines cue-in, effective end and crossfade timing.
+- Existing unchanged files retain their stored timing/runtime data, and legacy rows without an analysis fingerprint can use an already verified runtime-duration file fingerprint as the replacement baseline. No database ALTER statement or Scheduler rule change is required.
+- Added regressions for new-track fingerprint registration, same-path replacement refresh, unchanged-file preservation, legacy runtime-fingerprint fallback and the Scheduler Add Dir execution-time resolution path.
+- Updated APP_VERSION and native daemon version to 6049.
+
+v6050 - 2026-09-04
+-------------------
+- Fixed native next-track recovery when the authoritative audio engine reaches the end of the active track but the cached Python A/B plan has no following row or no longer contains the active queue item.
+- `native_need_next_track` now refreshes the upcoming queue directly from SQLite, skips the still-active queue row when necessary, rebuilds the short-lived Python plan tail, and loads the fresh next item onto the requested inactive deck instead of waiting indefinitely.
+- Preserved native timing ownership and repeated-request idempotence: an already matching confirmed native deck is reused, while stale different queue identities are replaced with a clear-slot load.
+- Empty-queue recovery now wakes AutoDJ/monitor processing, failed loads wake the monitor, and unexpected need-next exceptions are logged instead of being silently discarded.
+- Added a regression reproducing the MIXFM-style stale inactive deck / exhausted cached-plan condition and verifying that the next persisted queue item is loaded.
+- Updated APP_VERSION and native daemon version to 6050.
+
+v6051 - 2026-09-04
+-------------------
+- Isolated scheduled station-script execution so the global scheduler only dispatches ticks; each station now has its own persistent daemon worker queue and station lock, preventing a slow or failing script on one station from blocking exact-time scripts on other stations.
+- Added one-pending-tick protection per station plus occurrence-level in-flight dedup keyed by station, script ID and exact scheduled timestamp, preventing duplicate XX:MM:SS execution when work overlaps a later scheduler tick.
+- Added per-script and per-station exception isolation. A failed due occurrence is consumed once and marked Error, while other scripts and stations continue to run.
+- Script-engine diagnostics follow the existing logging contract: the new worker/scheduler failure messages are emitted only through the existing DEBUG=1 runtime logging gate and remain silent in normal operation.
+- Preserved the existing per-station queue databases, script definition cache, five-second late-tick grace, protected-playback guards, manual Next serialization and native timing ownership.
+- Added regressions for per-station daemon workers, dispatch isolation, occurrence-level in-flight dedup, global-lock scope and DEBUG-gated diagnostics.
+- Updated APP_VERSION and native daemon version to 6051.
+
+v6052 - 2026-09-04
+-------------------
+- Prevented malformed audio frames from crashing the shared native daemon: every decoded frame is validated before libswresample receives it, including channel layout, sample format, sample rate and channel-plane pointers.
+- The per-file decoder input contract is established from the first valid frame. An unexpected mid-file format or channel-layout change now terminates only that decode session with a controlled error instead of allowing an invalid pointer read.
+- Fatal native PCM analysis failures now mark the affected descriptor terminal and skip-required, do not prepare it for playback, and cannot be selected or transitioned to.
+- Added station-scoped bad-track recovery that removes only the exact failed queue row, preserves other stations, replans the inactive deck, and retries startup with the next queue item when the failed file was the first deck.
+- Added duplicate-event protection and a bounded startup retry guard so repeated failure events cannot delete unrelated queue items or create a recovery loop.
+- Kept diagnostic console output under the existing DEBUG=1 logging contract; normal operation does not emit new debug messages.
+- Added regression coverage for the native frame contract, fatal-analysis playback guard, queue-skip lifecycle and startup retry behavior.
+- Updated APP_VERSION and native daemon version to 6052.
+
+v6053 - 2026-09-05
+-------------------
+- Fixed the release version synchronization regression that caused the complete source build to fail after v6052 even though the application and native daemon versions were already synchronized.
+- The deployment-mode version regression now extracts APP_VERSION and WB_NATIVE_DAEMON_VERSION and verifies that they match instead of hardcoding the previous release number.
+- The version-history regression now verifies that the latest history entry matches APP_VERSION and that the recent v6021+ release tail remains continuous, removing the per-release hardcoded tail maintenance trap.
+- Kept the v6052 malformed-audio isolation, skip-required recovery and all playback/runtime behavior unchanged.
+- Updated APP_VERSION and native daemon version to 6053.
+
+v6054 - 2026-09-05
+-------------------
+- Fixed stale Encoders-panel runtime counters by making the persisted encoder `started_at` timestamp belong to the encoder START lifecycle instead of relying on a previous STOP or a later status poll to clean old state.
+- Every real manual, configure/restart and on-air Autostart encoder START now clears the previous timestamp before the native start request and persists a new timestamp only after that request succeeds; a failed START therefore leaves no stale runtime clock behind.
+- Station startup Autostart outputs clear their persisted encoder clocks before native configuration and receive one fresh timestamp after the station has successfully started, covering crashes, forced process exits and other cases where a previous STOP cleanup never ran.
+- Kept live DSP source reconfiguration outside the encoder START clock reset path because changing the shared DSP source does not restart or reconnect the encoder output.
+- Kept encoder STOP cleanup and the `/api/encoders` stopped-state cleanup as additional safeguards, and added regression coverage for successful starts, failed starts, Autostart station startup and live DSP reconfiguration.
+- Updated APP_VERSION and native daemon version to 6054.
+
+v6055 - 2026-09-05
+-------------------
+- Fixed the short-track lifecycle race where an authoritative native `track_started` event could be processed after the deck had already advanced, leaving the played queue row behind and allowing the stale row to become the planned next item again.
+- Queue/history commit now follows the immutable `track_started` queue/slot identity even when that event is no longer the current native deck; late events never rewind Now Playing or the live A/B plan.
+- Exported per-deck `consumed` and `terminal` lifecycle flags from native `get_state` and made preload reuse reject terminal, consumed, analysis-failed and terminal-status candidates instead of trusting queue ID plus slot token alone.
+- `native_need_next_track` now distinguishes a ready preload from a still-pending preload and a stale terminal deck; stale played identities are excluded from the recovered SQLite plan before loading the real next queue row.
+- Manual hard-select/Next reuse now requires completed native analysis plus actual prebuffered PCM, preventing a stale or not-ready deck from being selected as an already prepared target.
+- Added regressions reproducing the Tel Star one-second-ID -> SAILOR terminal-deck stall, late short-track queue commit and stale manual-preload reuse conditions.
+- Updated APP_VERSION and native daemon version to 6055.
+
+v6056 - 2026-09-05
+-------------------
+- Fixed the repeated native need-next load storm seen after short IDs: a live non-terminal inactive-deck candidate is now protected while native PCM analysis or prebuffering is still in progress, even if a concurrent Python/SQLite replan temporarily points at a different upcoming queue row.
+- Scoped audio-probe EOF/error and prebuffer state to the confirmed deck queue/slot identity, so a stale terminal probe from the previous short ID can no longer make a newly loaded next track look terminal and trigger an immediate replacement.
+- Added an explicit native per-deck lifecycle phase (`empty`, `loading`, `ready`, `playing`, `terminal`) plus per-deck `playback_started` state to authoritative `get_state`, so recovery decisions no longer infer deck usability from queue identity alone.
+- Added a hard native safety guard that rejects loading a different queue identity onto the currently active deck after playback has started. A Python timing/replan race can therefore no longer overwrite the on-air deck descriptor while PCM from the previous track is still audible.
+- Preserved terminal/consumed/analysis-failed recovery: unusable inactive candidates are still discarded and replanned, while valid in-progress candidates are allowed to finish exactly once instead of being alternately replaced.
+- Added regressions reproducing the MaxFM short-ID alternating 5463/5465 load storm, stale previous-probe EOF state, and the active-deck overwrite race that left queue identity at 5473 while the 5472 audio probe was still playing.
+- Updated APP_VERSION and native daemon version to 6056.
+
+v6057 - 2026-09-05
+-------------------
+- Fixed the v6056 source regression expectation for native need-next recovery so it now requires the `reject_if_active_deck=True` safety guard introduced by v6056 instead of treating that guard as an unexpected argument.
+- Kept the v6056 short-ID candidate-stability, per-deck lifecycle and active-deck overwrite protections unchanged; this release changes the regression contract only, not playback behavior.
+- Updated APP_VERSION and native daemon version to 6057.
+
+v6058 - 2026-09-05
+-------------------
+- Fixed exact-time station scripts being silently missed when a station script worker was still busy at the scheduled second, which could make the same XX:59:40 announcement run on only a subset of stations.
+- Busy per-station script workers no longer drop scheduler ticks. The dispatcher now coalesces the latest deferred wall-clock tick and the worker replays each missing second after the current job finishes, preserving the exact scheduled occurrence without creating an unbounded queue.
+- Deferred replay is bounded to the most recent 60 seconds so a genuinely stuck worker cannot accumulate unlimited scheduler backlog or replay very old announcements.
+- Kept per-station worker isolation and occurrence-level in-flight/LAST_RUN deduplication, so replayed ticks cannot execute the same scheduled occurrence twice.
+- Added regression coverage that blocks a station worker across 19:59:40 and verifies that 19:59:40 is processed after the worker is released instead of being lost.
+- Kept the v6056/v6057 short-ID candidate stability, active-deck safety and all audio-engine behavior unchanged.
+- Updated APP_VERSION and native daemon version to 6058.
+
+
+
+v6059 - 2026-09-05
+-------------------
+- Fixed a global exact-time script blind spot where one transient OFF-AIR/native-state sample could put the script dispatcher into a 30-second idle wait and skip the same XX:59:40 occurrence on every station at once.
+- Exact-time station scripts now keep the global dispatcher on the one-second cadence continuously; the existing wake event remains interruptible but no 30-second script-engine sleep can cover an exact-time occurrence.
+- Moved Auto script/scheduler activation into a backend helper and call it directly after successful station START, so automation no longer depends on a Studio browser page observing the ON-AIR transition.
+- Station START now wakes both script and scheduler dispatcher threads immediately; the browser auto-start endpoint reuses the same idempotent backend helper.
+- Kept the v6058 per-station busy-worker deferred tick replay, so both global-dispatch gaps and station-worker contention are covered.
+- Added regressions for the global one-second polling contract, backend station-start automation activation and shared browser/backend auto-start path.
+- Updated APP_VERSION and native daemon version to 6059.
+
+
+v6060 - 2026-09-05
+-------------------
+- Fixed a v6059 control-start regression where the internal `/api/control` recovery path called `StationService.start()` without the already resolved station key. The explicit station key is again passed through so recovery cannot drift to a concurrently changed active-station selection.
+- Preserved the original v6046 root-cause propagation contract for failed station starts and restored the regression that requires `_get_station_service().start(station_key)` in the control recovery path.
+- Kept the v6059 global one-second exact-time dispatcher cadence, backend Auto-script activation after station START, and the v6058 deferred per-station tick replay unchanged.
+- Updated the v6059 release-contract version assertion to verify v6059-or-newer synchronized app/native versions instead of hardcoding one release number; the dynamic version-history test and build script still require the current release version exactly.
+- Added a v6060 regression that distinguishes the `/api/control` explicit-station start path from the normal station START route and verifies that the v6059 backend automation wake-up behavior remains present.
+- Updated APP_VERSION and native daemon version to 6060.
+
+v6061 - 2026-09-08
+-------------------
+- Fixed the exact-time script / native crossfade race reproduced after more than two days of Max FM uptime, where a script queue replan could load the time announcement onto a deck that had become audible milliseconds earlier and split the control-plane queue identity from the actual PCM probe.
+- Script occurrences that call `next()` no longer preload their newly moved queue group through the ordinary queue-mutation replan path. The serialized Manual Next handoff now owns selection of the script queue head from fresh native state.
+- Script interrupts wait for an in-progress native transition and its outgoing playback voice to finish before dispatching Manual Next, preventing a time announcement from stealing either side of an active crossfade.
+- Added an atomic native `reject_if_playback_started` load guard. Queue-mutation, delayed inactive preload, native need-next recovery and manual-fast handoff loads use it so neither the active voice nor an outgoing crossfade voice can have its deck descriptor replaced while PCM is still audible.
+- Queue-mutation replans now defer while native `transitioning` is true and use both active-deck and playback-started guards immediately before destructive deck loads.
+- Script Manual Next failures now propagate to script status instead of being silently reported as a successful scheduled occurrence.
+- Added v6061 regressions for the Max FM 17.mp3 / RMB crossfade race, transition-idle script handoff contract and native playback-in-use rejection option.
+- Updated APP_VERSION and native daemon version to 6061.
+
+v6062 - 2026-09-09
+-------------------
+- Fixed the Jampec exact-time / armed-hard-handoff race where a scripted Manual Next could replace the descriptor of a deck that was already primed and reserved as the destination of a pending native hard handoff, splitting control queue identity from the PCM that actually crossed the boundary.
+- Native hard-handoff scheduling now revalidates both confirmed deck identities while holding the engine lock before publishing the output reservation, serializing the arm operation against destructive deck loads.
+- Native deck loads now reject a different identity on a pending hard-handoff target with `hard_handoff_target_reserved`; the reserved target cannot be overwritten until the scheduled handoff completes or is cancelled.
+- Native `get_state` now exposes `hard_handoff_armed`, source/target deck and target queue/slot identity so Python can wait on the real pending hard-handoff state instead of only the later `transitioning` phase.
+- Exact-time script interrupts now wait while either a native transition or a native hard handoff is armed, closing the 05:59:37 armed -> 05:59:41 script-load window reproduced on Jampec.
+- Manual Next now distinguishes an actually audible queue head from a READY/not-playing stale active-head descriptor; if `playback_started=false` and no matching decoding probe is audible, Next enters direct recovery instead of timing out with the false `queue_head_is_currently_audible` error.
+- Added v6062 regression coverage for hard-handoff target reservation, atomic handoff identity revalidation, script wait behavior and READY active-head Manual Next recovery.
+- Updated APP_VERSION and native daemon version to 6062.
+
+v6063 - 2026-09-10
+-------------------
+- Fixed AutoDJ rotation gaps for singleton NoRules categories such as the Tel Star one-second station ID. The v6062 protocol logs showed that every queued `Ezek_az_igazi_zenek.mp3` instance reached `track_started` and normal `natural_eof`; the missing IDs were never queued, so the short-track/native EOF protections were not the cause.
+- NoRules candidate selection now prefers a track that is not already present in the lookahead queue, but if every candidate is already queued it may repeat an existing candidate instead of consuming and skipping that rotation slot. This preserves an exact music/music/music/ID rotation even when the ID category contains only one track and the AutoDJ lookahead spans more than one rotation cycle.
+- Normal repeat-rule categories keep the existing queue/history artist/title/track exclusions unchanged, and multi-track NoRules categories still prefer distinct queued candidates whenever one is available.
+- Kept the v6055-v6062 short-ID terminal recovery, candidate-stability, active-deck, hard-handoff reservation, script and Manual Next protections unchanged.
+- Added regression coverage for both incremental refill and initial multi-cycle lookahead with a singleton NoRules ID category, plus preservation of distinct-candidate preference.
+- Updated APP_VERSION and native daemon version to 6063.
+
+v6064 - 2026-09-11
+-------------------
+- Fixed an on-air multi-output race where a newly enabled live encoder branch became visible to the watchdog before its first-data timestamp was initialized. On a different thread schedule this could falsely count an encoder stall and restart the shared pipeline while adding a second Icecast output.
+- Live-added branches now publish `encoder_ready=false` and a fresh `last_encoded_data_monotonic_ms` atomically under the output lock before configuration is exposed to the watchdog. A branch that genuinely produces no data still reaches the existing 15-second stall timeout normally.
+- Added deterministic v6064 regression coverage for the live-add watchdog publication order while retaining the end-to-end test that requires adding an AAC+ output without restarting an already-running MP3 output.
+- Updated the buildkit for clean Debian 13 hosts: host FFmpeg/FFprobe and the matching shared libpython are checked before the expensive build stages so native audio regressions cannot be silently skipped because of missing tools.
+- Updated APP_VERSION and native daemon version to 6064.
+
+v6065 - 2026-09-11
+-------------------
+- Standardized amd64 release builds on a Debian 12 userspace baseline so one release package can retain Debian 12 support while also running on Debian 13.
+- Added transparent Podman orchestration to the buildkit: on amd64, the normal build script automatically creates or reuses the validated Debian 12 builder image and re-enters itself inside that container. The user-facing build command remains unchanged.
+- Added a versioned Debian 12 Containerfile with Python 3.11, matching libpython, FFmpeg/FFprobe, Node.js and the native compiler/toolchain dependencies required by the complete regression and PyInstaller build.
+- The amd64 inner build now verifies that it is actually running on Debian 12 before compiling, preventing accidental Debian 13 glibc baselines. Raspberry Pi 5 arm64 builds remain native and unchanged.
+- Added a final amd64 package ABI audit that rejects any packaged ELF requiring a GLIBC symbol newer than 2.36, providing an explicit Debian 12 compatibility guard in addition to the container baseline.
+- Kept the v6064 live-output watchdog race fix and all application/runtime behavior unchanged.
+- Updated APP_VERSION and native daemon version to 6065.
+
+v6066 - 2026-09-11
+-------------------
+- Added visible Studio ON-AIR/OFF-AIR error reporting for failed audio-engine control requests. The Studio button now reads the backend JSON response and shows the returned root-cause error instead of silently returning to OFF AIR.
+- A missing SoundSolution configuration such as a relocated `ss18.dat` is now shown directly to the operator, including the exact backend path/error text, so database moves can be diagnosed without browser developer tools.
+- Network/control request failures are also shown immediately while the existing backend startup, rollback, DSP validation and database behavior remain unchanged.
+- Added regression coverage for backend and network error visibility from the Studio ON-AIR control.
+- Updated APP_VERSION and native daemon version to 6066.
+
+
+v6067 - 2026-09-11
+-------------------
+- Replaced the browser alert used for Studio ON-AIR/OFF-AIR control failures with the existing Web Broadcaster floating modal style, while preserving the exact backend error text for diagnosis.
+- Missing `ss18.dat` startup failures now trigger application-local recovery discovery. Web Broadcaster first checks the same bundled configuration path used for first-run defaults, then performs a bounded search inside the current installation.
+- Recovery candidates must match the known bundled `ss18.dat` SHA-256 before they are offered, preventing an unrelated same-named file from being selected.
+- When a valid `ss18.dat` is found, the error modal shows both the stale path stored in the station database and the discovered path, and offers `Use found path and retry`.
+- Accepting the repair updates only the active station `settings.ssproc_appimage` value, refreshes the Settings field in Studio, and automatically retries the ON-AIR start once. Other startup/network/control errors remain visible in the same modal without an automatic database change.
+- Added v6067 regression coverage for modal error visibility, verified `ss18.dat` discovery, station-path replacement and one-shot automatic retry.
+- Updated APP_VERSION and native daemon version to 6067.
+
+
+v6068 - 2026-09-11
+-------------------
+- Fixed filename-derived fallback metadata so a hyphenated title such as `90-es_intro.mp3` is preserved as title `90-es intro` instead of losing the numeric prefix or being misidentified as artist/title.
+- Leading track numbers are now removed only for unambiguous forms such as `01 - `, `01. ` and `01_`; number-hyphen-word names are left intact.
+- Filename fallback now splits artist/title only on the explicit spaced `Artist - Title` delimiter. Bare hyphens remain part of the filename text, preserving names such as `Artist-Title`, `Blink-182` and `AC-DC`.
+- The same corrected fallback feeds the canonical native descriptor, Studio UI and outgoing Icecast metadata whenever embedded artist/title tags are unavailable.
+- Added v6068 regression coverage for hyphenated Hungarian titles, numbered tracks, spaced artist/title filenames and legitimate bare-hyphen names.
+- Updated APP_VERSION and native daemon version to 6068.
+
+v6069 - 2026-09-14
+-------------------
+- Added a script-only interrupt transition for scheduled/scripted queue items that request immediate playback. Normal automatic crossfade, Manual Next hard switching and non-interrupting script inserts remain unchanged.
+- Script interrupt now starts fading the currently audible deck from its exact current playback position while the target deck remains silent and prebuffered.
+- At the halfway point of the configured fade-out, where the existing smoothstep outgoing gain is exactly 50%, the script target starts immediately at 100% gain with a zero-millisecond entry ramp; no fade-in is applied.
+- Now Playing, authoritative `track_started` lifecycle and Icecast metadata switch only when the script audio actually enters at the halfway point, not when the outgoing fade begins.
+- The script target keeps the existing serialized Manual Next queue reservation, identity validation and native prebuffer readiness protections; if the target cannot be prepared, the outgoing track is not faded.
+- Script interrupt fade duration uses the station's existing crossfade fade-out setting and is clamped to the remaining playable outgoing audio when native timing data is available.
+- Added v6069 regression coverage for script-only routing, preservation of Manual Next behavior, remaining-audio fade clamping, delayed full-gain native entry and zero-ramp mixer gating.
+- Updated APP_VERSION and native daemon version to 6069.
+
+
+v6070 - 2026-09-14
+-------------------
+- Restored the v6068 Manual Next, hard-handoff and seek guards unchanged after the v6069 script-interrupt work had broadened those stable control-path conditions.
+- Isolated script-interrupt target preparation from the existing Manual Next preparation path: the script-only branch keeps its own strict target identity, active-deck and playback-started rejection plus native prebuffer wait without changing legacy Manual Next semantics.
+- Preserved the v6069 audible behavior: the outgoing track fades from its current position and the script track enters at the 50% outgoing-gain point at 100% gain with no fade-in; Now Playing and Icecast metadata switch at that entry point.
+- The complete pre-existing routing regression contracts now remain valid alongside the new script-interrupt regression coverage.
+- Updated APP_VERSION and native daemon version to 6070.
+
+
+v6071 - 2026-09-14
+-------------------
+- Changed only the script-interrupt entry threshold from 50% to 30% outgoing gain. With the existing smoothstep fade curve, the script track now starts at about 63.674% of the configured fade-out duration.
+- The script track still starts immediately at 100% gain with zero fade-in; fade duration, queue/prebuffer guards, Manual Next, normal crossfade, Now Playing and Icecast handoff behavior are otherwise unchanged.
+- Updated APP_VERSION and native daemon version to 6071.
+
+
+v6072 - 2026-09-14
+-------------------
+- Changed only the script-interrupt entry threshold from 30% to 25% outgoing gain. With the existing smoothstep fade curve, the script track now starts at about 67.365% of the configured fade-out duration.
+- The script track still starts immediately at 100% gain with zero fade-in; fade duration, queue/prebuffer guards, Manual Next, normal crossfade, Now Playing and Icecast handoff behavior are otherwise unchanged.
+- Updated APP_VERSION and native daemon version to 6072.

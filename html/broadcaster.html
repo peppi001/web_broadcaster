@@ -385,6 +385,28 @@
   </div>
 </article>
 
+<article id="studio-engine-error-window" class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered studio-floating-window--dialog studio-floating-window--no-resize studio-engine-error-window" aria-hidden="true" data-min-width="560" data-min-height="260" style="display:none;width:640px;height:300px;">
+  <div class="panel-titlebar studio-floating-window__titlebar">
+    <span id="studio-engine-error-title">Broadcasting Error</span>
+    <button type="button" id="studio-engine-error-close" class="studio-window-close" aria-label="Close broadcasting error">×</button>
+  </div>
+  <div class="panel-body panel-body--browser-window studio-engine-error-body">
+    <div id="studio-engine-error-message" class="studio-engine-error-message"></div>
+    <div id="studio-engine-error-configured-row" class="studio-engine-error-path-row" style="display:none;">
+      <strong>Stored configuration path</strong>
+      <code id="studio-engine-error-configured-path" class="studio-engine-error-path"></code>
+    </div>
+    <div id="studio-engine-error-found-row" class="studio-engine-error-path-row" style="display:none;">
+      <strong>Found ss18.dat</strong>
+      <code id="studio-engine-error-found-path" class="studio-engine-error-path"></code>
+    </div>
+  </div>
+  <div class="panel-footer studio-floating-window__footer studio-users-delete-window__footer">
+    <button type="button" id="studio-engine-error-repair" class="modal-btn modal-primary" style="display:none;">Use found path and retry</button>
+    <button type="button" id="studio-engine-error-ok" class="modal-btn modal-secondary">Close</button>
+  </div>
+</article>
+
 <article id="playlist-delete-window" class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered studio-floating-window--dialog studio-floating-window--no-resize studio-users-delete-window" aria-hidden="true" data-min-width="420" data-min-height="180" style="display:none;width:420px;height:180px;">
   <div class="panel-titlebar studio-floating-window__titlebar">
     <span id="playlist-delete-title">Delete Category</span>

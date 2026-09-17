@@ -159,13 +159,25 @@ class AutoDJService:
         random.shuffle(candidates)
 
         if norules:
-            eligible = [
+            candidate_track_ids = [
                 int(row.get("track_id") or 0)
                 for row in candidates
                 if int(row.get("track_id") or 0) > 0
-                and int(row.get("track_id") or 0) not in queue_track_ids
             ]
-            return int(random.choice(eligible)) if eligible else None
+            if not candidate_track_ids:
+                return None
+            eligible = [
+                track_id
+                for track_id in candidate_track_ids
+                if track_id not in queue_track_ids
+            ]
+            if eligible:
+                return int(random.choice(eligible))
+            # NoRules rotation rows must remain repeatable even when their only
+            # available track is already present in the lookahead queue. Prefer
+            # a distinct track whenever possible, but do not consume the rotation
+            # slot merely because a singleton jingle/ID appears earlier in queue.
+            return int(random.choice(candidate_track_ids))
 
         no_artist = self._minutes(settings, "no_repeat_artist_minutes")
         no_title = self._minutes(settings, "no_repeat_title_minutes")

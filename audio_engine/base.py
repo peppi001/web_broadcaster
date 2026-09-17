@@ -117,6 +117,8 @@ class AudioEngine(ABC):
         retry_delay: float = 0.35,
         clear_slot: bool = False,
         manual_next_fast: bool = False,
+        reject_if_active_deck: bool = False,
+        reject_if_playback_started: bool = False,
     ) -> bool:
         """Load one source into an A/B deck.
 
@@ -139,4 +141,16 @@ class AudioEngine(ABC):
         timeout_sec: float = 1.0,
     ) -> Any:
         """Transition to one A/B deck and preserve the backend reply."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def script_interrupt_to(
+        self,
+        deck: str,
+        duration: float,
+        *,
+        timeout_sec: float = 1.0,
+        station_key: str = "",
+    ) -> Any:
+        """Fade the active deck and start a script target at full gain halfway through."""
         raise NotImplementedError

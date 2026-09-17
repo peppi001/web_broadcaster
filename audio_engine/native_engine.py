@@ -808,6 +808,8 @@ class NativeEngine(AudioEngine):
         retry_delay: float = 0.35,
         clear_slot: bool = False,
         manual_next_fast: bool = False,
+        reject_if_active_deck: bool = False,
+        reject_if_playback_started: bool = False,
         station_key: str = "",
     ) -> bool:
         identity = extract_annotated_identity(uri)
@@ -859,6 +861,8 @@ class NativeEngine(AudioEngine):
                 "retry_delay": float(retry_delay),
                 "clear_slot": bool(clear_slot),
                 "manual_next_fast": bool(manual_next_fast),
+                "reject_if_active_deck": bool(reject_if_active_deck),
+                "reject_if_playback_started": bool(reject_if_playback_started),
             },
         )
         result = response.get("result")
@@ -973,6 +977,22 @@ class NativeEngine(AudioEngine):
     ) -> Any:
         return self.request(
             "transition",
+            station_key=self._resolve_station_key(station_key),
+            deck=normalize_deck(deck),
+            duration=float(duration),
+            timeout_sec=float(timeout_sec),
+        ).get("result")
+
+    def script_interrupt_to(
+        self,
+        deck: str,
+        duration: float,
+        *,
+        timeout_sec: float = 1.0,
+        station_key: str = "",
+    ) -> Any:
+        return self.request(
+            "script_interrupt",
             station_key=self._resolve_station_key(station_key),
             deck=normalize_deck(deck),
             duration=float(duration),

@@ -18,7 +18,7 @@
 #define WB_FAULT_MODE_SIZE 64
 #define WB_FAULT_REASON_SIZE 128
 #define WB_AUDIO_ALIAS_CAPACITY 32
-#define WB_NATIVE_DAEMON_VERSION "6042"
+#define WB_NATIVE_DAEMON_VERSION "6072"
 #define WB_AUDIO_SAMPLE_RATE 44100
 #define WB_AUDIO_CHANNELS 2
 #define WB_AUDIO_BYTES_PER_SAMPLE 2
@@ -413,6 +413,9 @@ typedef struct {
     char scheduled_for_slot_token[WB_SLOT_TOKEN_SIZE];
     bool transition_completion_pending;
     int64_t transition_completion_monotonic_ms;
+    bool transition_entry_pending;
+    int64_t transition_entry_monotonic_ms;
+    bool transition_script_interrupt;
     char transition_from_deck;
     char transition_to_deck;
     WbDeckState transition_from_track;

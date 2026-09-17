@@ -23,6 +23,9 @@
 #define WB_ANALYSIS_DEFAULT_ARTIFACT_MAX_MS 300
 #define WB_ANALYSIS_DEFAULT_ARTIFACT_SILENCE_MS 250
 #define WB_ANALYSIS_MAX_WINDOWS 720000U
+#define WB_ANALYSIS_LONG_TRACK_FALLBACK_MS 600000LL
+#define WB_ANALYSIS_LONG_TRACK_HEAD_SAMPLE_MS 60000LL
+#define WB_ANALYSIS_LONG_TRACK_TAIL_SAMPLE_MS 120000LL
 
 typedef struct {
     int64_t start_ms;
@@ -70,6 +73,40 @@ static bool local_file_track(const WbDeckState *track) {
     return access(track->path, R_OK) == 0;
 }
 
+static bool known_long_track(const WbDeckState *track) {
+    if (track == NULL) return false;
+    return track->source_end_ms >= WB_ANALYSIS_LONG_TRACK_FALLBACK_MS;
+}
+
+static void apply_long_track_fallback(WbDeckState *track) {
+    int64_t fallback_ms;
+    int64_t transition_ms;
+    if (track == NULL) return;
+
+    if (track->play_start_ms < 0) track->play_start_ms = 0;
+    if (track->audio_start_ms < 0) track->audio_start_ms = 0;
+    if (track->source_end_ms < track->play_start_ms) {
+        track->source_end_ms = track->play_start_ms;
+    }
+    if (track->effective_end_ms <= track->play_start_ms || track->effective_end_ms > track->source_end_ms) {
+        track->effective_end_ms = track->source_end_ms;
+    }
+
+    fallback_ms = track->crossfade_fallback_ms > 0 ? track->crossfade_fallback_ms : 3000;
+    transition_ms = track->effective_end_ms - fallback_ms;
+    if (transition_ms < track->play_start_ms) transition_ms = track->play_start_ms;
+    if (transition_ms > track->effective_end_ms) transition_ms = track->effective_end_ms;
+
+    track->cue_in_ms = track->play_start_ms;
+    track->transition_at_ms = transition_ms;
+    track->cue_out_ms = transition_ms;
+    track->short_no_crossfade = false;
+    track->analysis_ready = true;
+    track->analysis_failed = false;
+    copy_text(track->analysis_source, sizeof(track->analysis_source), "native_long_track_fallback");
+    track->analysis_error[0] = '\0';
+}
+
 static double dbfs_from_peak(int peak) {
     double normalized = (double)peak / 32768.0;
     if (normalized < 1.0e-12) normalized = 1.0e-12;
@@ -113,11 +150,13 @@ static int append_window(
     return 0;
 }
 
-static int decode_metrics(
+static int decode_metrics_range(
     WbEngineState *state,
     WbAudioAnalysisWorker *worker,
     uint64_t generation,
     const WbDeckState *track,
+    int64_t range_start_ms,
+    int64_t range_duration_ms,
     WbAnalysisMetrics *metrics,
     char *error,
     size_t error_size
@@ -146,8 +185,8 @@ static int decode_metrics(
     config.path = track->path;
     config.stream_source = false;
     config.stream_infinite = false;
-    config.start_ms = 0;
-    config.duration_ms = 0;
+    config.start_ms = range_start_ms > 0 ? range_start_ms : 0;
+    config.duration_ms = range_duration_ms > 0 ? range_duration_ms : 0;
     config.fifo_capacity = 1024U * 1024U;
     if (wb_libav_decode_start(&session, &config, error, error_size) != 0) return -1;
 
@@ -210,9 +249,10 @@ static int decode_metrics(
             total_frames += 1U;
             window_frame_count += 1U;
             if (window_frame_count >= window_frames) {
-                int64_t end_ms = (int64_t)((total_frames * 1000ULL) / WB_AUDIO_SAMPLE_RATE);
+                int64_t end_ms = range_start_ms
+                    + (int64_t)((total_frames * 1000ULL) / WB_AUDIO_SAMPLE_RATE);
                 int64_t start_ms = end_ms - configured_window_ms;
-                if (start_ms < 0) start_ms = 0;
+                if (start_ms < range_start_ms) start_ms = range_start_ms;
                 if (append_window(
                         metrics, start_ms, end_ms, window_peak,
                         window_sum_squares, window_sample_count
@@ -235,8 +275,10 @@ static int decode_metrics(
     wb_libav_decode_error(session, error, error_size);
     if (error[0] != '\0') goto finished;
     if (window_frame_count > 0U) {
-        int64_t end_ms = (int64_t)((total_frames * 1000ULL) / WB_AUDIO_SAMPLE_RATE);
-        int64_t start_ms = metrics->count > 0U ? metrics->items[metrics->count - 1U].end_ms : 0;
+        int64_t end_ms = range_start_ms
+            + (int64_t)((total_frames * 1000ULL) / WB_AUDIO_SAMPLE_RATE);
+        int64_t start_ms = metrics->count > 0U
+            ? metrics->items[metrics->count - 1U].end_ms : range_start_ms;
         if (append_window(
                 metrics, start_ms, end_ms, window_peak,
                 window_sum_squares, window_sample_count
@@ -245,8 +287,9 @@ static int decode_metrics(
             goto finished;
         }
     }
-    metrics->duration_ms = (int64_t)((total_frames * 1000ULL) / WB_AUDIO_SAMPLE_RATE);
-    if (metrics->count == 0U || metrics->duration_ms <= 0) {
+    metrics->duration_ms = range_start_ms
+        + (int64_t)((total_frames * 1000ULL) / WB_AUDIO_SAMPLE_RATE);
+    if (metrics->count == 0U || metrics->duration_ms <= range_start_ms) {
         copy_text(error, error_size, "analysis produced no PCM");
         goto finished;
     }
@@ -258,6 +301,20 @@ finished:
         wb_libav_decode_destroy(session);
     }
     return result;
+}
+
+static int decode_metrics(
+    WbEngineState *state,
+    WbAudioAnalysisWorker *worker,
+    uint64_t generation,
+    const WbDeckState *track,
+    WbAnalysisMetrics *metrics,
+    char *error,
+    size_t error_size
+) {
+    return decode_metrics_range(
+        state, worker, generation, track, 0, 0, metrics, error, error_size
+    );
 }
 
 static bool window_active(const WbAnalysisWindow *window, double threshold_dbfs) {
@@ -359,6 +416,196 @@ static double percentile_db(const WbAnalysisMetrics *metrics, size_t start, size
     }
     free(values);
     return result;
+}
+
+static double percentile_db_pair(
+    const WbAnalysisMetrics *head,
+    size_t head_start,
+    size_t head_end,
+    const WbAnalysisMetrics *tail,
+    size_t tail_start,
+    size_t tail_end,
+    double percentile
+) {
+    double *values;
+    size_t capacity = 0U;
+    size_t count = 0U;
+    size_t index;
+    double result = -24.0;
+
+    if (head != NULL && head_end > head_start && head_end <= head->count) {
+        capacity += head_end - head_start;
+    }
+    if (tail != NULL && tail_end > tail_start && tail_end <= tail->count) {
+        capacity += tail_end - tail_start;
+    }
+    if (capacity == 0U) return result;
+
+    values = malloc(capacity * sizeof(*values));
+    if (values == NULL) return result;
+    if (head != NULL && head_end <= head->count) {
+        for (index = head_start; index < head_end; index += 1U) {
+            double value = head->items[index].rms_dbfs;
+            if (isfinite(value) && value >= -90.0) values[count++] = value;
+        }
+    }
+    if (tail != NULL && tail_end <= tail->count) {
+        for (index = tail_start; index < tail_end; index += 1U) {
+            double value = tail->items[index].rms_dbfs;
+            if (isfinite(value) && value >= -90.0) values[count++] = value;
+        }
+    }
+    if (count > 0U) {
+        size_t target;
+        qsort(values, count, sizeof(*values), compare_double_ascending);
+        if (percentile < 0.0) percentile = 0.0;
+        if (percentile > 100.0) percentile = 100.0;
+        target = (size_t)llround((percentile / 100.0) * (double)(count - 1U));
+        if (target >= count) target = count - 1U;
+        result = values[target];
+    }
+    free(values);
+    return result;
+}
+
+static void apply_long_track_partial_analysis(
+    WbDeckState *track,
+    const WbAnalysisMetrics *head,
+    const WbAnalysisMetrics *tail
+) {
+    int64_t window_ms = track->analysis_window_ms > 0
+        ? track->analysis_window_ms : WB_ANALYSIS_DEFAULT_WINDOW_MS;
+    int64_t sustain_ms = track->analysis_sustain_ms > 0
+        ? track->analysis_sustain_ms : WB_ANALYSIS_DEFAULT_SUSTAIN_MS;
+    int64_t artifact_max_ms = track->analysis_artifact_max_ms > 0
+        ? track->analysis_artifact_max_ms : WB_ANALYSIS_DEFAULT_ARTIFACT_MAX_MS;
+    int64_t artifact_silence_ms = track->analysis_artifact_silence_ms > 0
+        ? track->analysis_artifact_silence_ms : WB_ANALYSIS_DEFAULT_ARTIFACT_SILENCE_MS;
+    double start_threshold = isfinite(track->gap_start_threshold_dbfs)
+        && track->gap_start_threshold_dbfs < 0.0 ? track->gap_start_threshold_dbfs : -20.0;
+    double end_threshold = isfinite(track->gap_end_threshold_dbfs)
+        && track->gap_end_threshold_dbfs < 0.0 ? track->gap_end_threshold_dbfs : -24.0;
+    double relative_trigger = isfinite(track->crossfade_trigger_relative_db)
+        && track->crossfade_trigger_relative_db < 0.0 ? track->crossfade_trigger_relative_db : -7.0;
+    size_t sustain_windows = (size_t)((sustain_ms + window_ms - 1) / window_ms);
+    size_t start_index;
+    size_t end_index;
+    WbWindowRun *runs = NULL;
+    size_t run_count;
+    size_t chosen_run = 0U;
+    int64_t ignored_artifact_ms = 0;
+    int64_t trailing_silence_ms = 0;
+    double reference_db;
+    double trigger_db;
+    int64_t trigger_ms;
+    size_t index;
+
+    if (track == NULL || head == NULL || tail == NULL || head->count == 0U || tail->count == 0U) {
+        apply_long_track_fallback(track);
+        return;
+    }
+    if (sustain_windows == 0U) sustain_windows = 1U;
+    start_index = sustained_start(head, start_threshold, sustain_windows);
+
+    run_count = collect_active_runs(tail, end_threshold, &runs);
+    if (run_count > 1U) {
+        size_t read_index;
+        size_t write_index = 0U;
+        int64_t merge_silence_ms = sustain_ms > 120 ? sustain_ms : 120;
+        for (read_index = 1U; read_index < run_count; read_index += 1U) {
+            int64_t silence_ms = tail->items[runs[read_index].start].start_ms
+                - tail->items[runs[write_index].end - 1U].end_ms;
+            if (silence_ms <= merge_silence_ms) {
+                runs[write_index].end = runs[read_index].end;
+            } else {
+                write_index += 1U;
+                runs[write_index] = runs[read_index];
+            }
+        }
+        run_count = write_index + 1U;
+    }
+    if (run_count == 0U) {
+        end_index = tail->count;
+    } else {
+        chosen_run = run_count - 1U;
+        while (chosen_run > 0U) {
+            WbWindowRun current = runs[chosen_run];
+            WbWindowRun previous = runs[chosen_run - 1U];
+            int64_t current_duration = tail->items[current.end - 1U].end_ms
+                - tail->items[current.start].start_ms;
+            int64_t silence_before = tail->items[current.start].start_ms
+                - tail->items[previous.end - 1U].end_ms;
+            if (current_duration <= artifact_max_ms && silence_before >= artifact_silence_ms) {
+                ignored_artifact_ms += current_duration;
+                chosen_run -= 1U;
+                continue;
+            }
+            break;
+        }
+        end_index = runs[chosen_run].end;
+        if (end_index < tail->count) {
+            trailing_silence_ms = track->source_end_ms - tail->items[end_index - 1U].end_ms;
+            if (trailing_silence_ms < 0) trailing_silence_ms = 0;
+        }
+    }
+    free(runs);
+
+    if (end_index == 0U || end_index > tail->count) end_index = tail->count;
+    track->audio_start_ms = head->items[start_index].start_ms;
+    track->play_start_ms = track->audio_start_ms;
+    track->cue_in_ms = track->play_start_ms;
+    track->effective_end_ms = tail->items[end_index - 1U].end_ms;
+    if (track->source_end_ms <= 0) track->source_end_ms = tail->duration_ms;
+    if (track->effective_end_ms > track->source_end_ms) track->effective_end_ms = track->source_end_ms;
+    if (track->effective_end_ms <= track->play_start_ms) {
+        apply_long_track_fallback(track);
+        return;
+    }
+
+    reference_db = percentile_db_pair(
+        head, start_index, head->count,
+        tail, 0U, end_index,
+        75.0
+    );
+    if (reference_db > 0.0) reference_db = 0.0;
+    if (reference_db < -90.0) reference_db = -90.0;
+    trigger_db = reference_db + relative_trigger;
+    if (trigger_db > 0.0) trigger_db = 0.0;
+    if (trigger_db < -120.0) trigger_db = -120.0;
+
+    trigger_ms = track->effective_end_ms - (
+        track->crossfade_fallback_ms > 0 ? track->crossfade_fallback_ms : 3000
+    );
+    if (trigger_ms < track->play_start_ms) trigger_ms = track->play_start_ms;
+    for (index = end_index; index > 0U; index -= 1U) {
+        const WbAnalysisWindow *window = &tail->items[index - 1U];
+        if (window->rms_dbfs >= trigger_db) {
+            if (index < end_index) trigger_ms = tail->items[index].start_ms;
+            break;
+        }
+    }
+    {
+        int64_t crossfade = track->effective_end_ms - trigger_ms;
+        int64_t min_ms = track->crossfade_min_ms > 0 ? track->crossfade_min_ms : 100;
+        int64_t max_ms = track->crossfade_max_ms > 0 ? track->crossfade_max_ms : 6000;
+        if (crossfade < min_ms) trigger_ms = track->effective_end_ms - min_ms;
+        if (crossfade > max_ms) trigger_ms = track->effective_end_ms - max_ms;
+        if (trigger_ms < track->play_start_ms) trigger_ms = track->play_start_ms;
+    }
+
+    track->short_no_crossfade = false;
+    track->transition_at_ms = trigger_ms;
+    track->cue_out_ms = trigger_ms;
+    track->analysis_reference_dbfs = reference_db;
+    track->analysis_trigger_dbfs = trigger_db;
+    track->analysis_ignored_artifact_ms = ignored_artifact_ms;
+    track->analysis_trailing_silence_ms = trailing_silence_ms;
+    track->analysis_tail_peak_dbfs = tail->items[tail->count - 1U].peak_dbfs;
+    track->analysis_tail_rms_dbfs = tail->items[tail->count - 1U].rms_dbfs;
+    track->analysis_ready = true;
+    track->analysis_failed = false;
+    copy_text(track->analysis_source, sizeof(track->analysis_source), "native_pcm_long_track_partial");
+    track->analysis_error[0] = '\0';
 }
 
 static void apply_analysis(
@@ -520,6 +767,7 @@ static void emit_analysis_event(
         payload, sizeof(payload),
         "{\"native_analysis\":true,\"analysis_requested\":%s,"
         "\"analysis_ready\":%s,\"analysis_failed\":%s,"
+        "\"skip_required\":%s,\"terminal\":%s,"
         "\"analysis_source\":\"%s\",\"analysis_error\":\"%s\","
         "\"analysis_elapsed_ms\":%lld,\"audio_start_ms\":%lld,"
         "\"play_start_ms\":%lld,\"transition_at_ms\":%lld,"
@@ -531,6 +779,8 @@ static void emit_analysis_event(
         track->analysis_requested ? "true" : "false",
         track->analysis_ready ? "true" : "false",
         track->analysis_failed ? "true" : "false",
+        track->analysis_failed ? "true" : "false",
+        track->terminal ? "true" : "false",
         escaped_source,
         escaped_error,
         (long long)elapsed_ms,
@@ -561,6 +811,8 @@ static void *analysis_worker_main(void *context) {
         int64_t started_ms;
         int decode_result;
         WbAnalysisMetrics metrics = {0};
+        WbAnalysisMetrics long_head_metrics = {0};
+        WbAnalysisMetrics long_tail_metrics = {0};
         char error[WB_ANALYSIS_ERROR_SIZE] = "";
         bool current = false;
 
@@ -593,6 +845,50 @@ static void *analysis_worker_main(void *context) {
                 track.manual_timing ? "manual_override" : "native_analysis_skipped"
             );
             decode_result = 0;
+        } else if (known_long_track(&track)) {
+            int64_t head_duration_ms = WB_ANALYSIS_LONG_TRACK_HEAD_SAMPLE_MS;
+            int64_t tail_duration_ms = WB_ANALYSIS_LONG_TRACK_TAIL_SAMPLE_MS;
+            int64_t tail_start_ms;
+
+            if (head_duration_ms > track.source_end_ms) head_duration_ms = track.source_end_ms;
+            if (tail_duration_ms > track.source_end_ms) tail_duration_ms = track.source_end_ms;
+            tail_start_ms = track.source_end_ms - tail_duration_ms;
+            if (tail_start_ms < 0) tail_start_ms = 0;
+
+            /* Analyze only bounded head/tail samples. The middle of a long track is
+             * skipped by libav seek, keeping analysis work equivalent to at most a
+             * normal three-minute song while restoring PCM-derived cue boundaries. */
+            decode_result = decode_metrics_range(
+                state, worker, generation, &track,
+                0, head_duration_ms,
+                &long_head_metrics, error, sizeof(error)
+            );
+            if (decode_result == 0) {
+                decode_result = decode_metrics_range(
+                    state, worker, generation, &track,
+                    tail_start_ms, tail_duration_ms,
+                    &long_tail_metrics, error, sizeof(error)
+                );
+            }
+            if (decode_result == 0) {
+                apply_long_track_partial_analysis(
+                    &result, &long_head_metrics, &long_tail_metrics
+                );
+            } else if (decode_result < 0) {
+                bool fatal_input_contract_violation =
+                    strstr(error, "unsafe audio frame") != NULL
+                    || strstr(error, "audio format changed inside one file") != NULL
+                    || strstr(error, "missing channel plane") != NULL;
+                if (fatal_input_contract_violation) {
+                    result.analysis_ready = true;
+                    result.analysis_failed = true;
+                    result.consumed = true;
+                    result.terminal = true;
+                    copy_text(result.analysis_source, sizeof(result.analysis_source), "native_analysis_rejected");
+                    copy_text(result.analysis_error, sizeof(result.analysis_error), error);
+                }
+                if (!fatal_input_contract_violation) apply_long_track_fallback(&result);
+            }
         } else {
             decode_result = decode_metrics(
                 state, worker, generation, &track, &metrics, error, sizeof(error)
@@ -602,7 +898,9 @@ static void *analysis_worker_main(void *context) {
             } else if (decode_result < 0) {
                 result.analysis_ready = true;
                 result.analysis_failed = true;
-                copy_text(result.analysis_source, sizeof(result.analysis_source), "native_analysis_fallback");
+                result.consumed = true;
+                result.terminal = true;
+                copy_text(result.analysis_source, sizeof(result.analysis_source), "native_analysis_rejected");
                 copy_text(result.analysis_error, sizeof(result.analysis_error), error);
                 if (result.source_end_ms <= 0) result.source_end_ms = result.effective_end_ms;
                 if (result.effective_end_ms <= 0) result.effective_end_ms = result.source_end_ms;
@@ -611,6 +909,8 @@ static void *analysis_worker_main(void *context) {
             }
         }
         free(metrics.items);
+        free(long_head_metrics.items);
+        free(long_tail_metrics.items);
 
         /* The decoder must be prepared before analysis_ready becomes visible.
          * Otherwise select/transition can wake between the descriptor commit and
@@ -629,7 +929,9 @@ static void *analysis_worker_main(void *context) {
             continue;
         }
 
-        wb_audio_probe_prepare_deck(state, worker->deck, &result);
+        if (!result.analysis_failed) {
+            wb_audio_probe_prepare_deck(state, worker->deck, &result);
+        }
 
         (void)pthread_mutex_lock(&state->lock);
         current = !worker->shutdown
@@ -745,6 +1047,11 @@ bool wb_audio_analysis_wait_ready(
             || ((slot_token == NULL || slot_token[0] == '\0') && queue_id > 0 && live->queue_id == queue_id)
         );
         if (!identity) break;
+        if (live->analysis_failed || live->terminal || live->consumed) {
+            if (result != NULL) *result = *live;
+            ready = false;
+            break;
+        }
         if (live->analysis_ready || !live->analysis_requested || live->manual_timing) {
             if (result != NULL) *result = *live;
             ready = true;

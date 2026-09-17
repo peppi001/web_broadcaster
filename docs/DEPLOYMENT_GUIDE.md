@@ -1,6 +1,6 @@
-# Web Broadcaster v6042 deployment guide
+# Web Broadcaster v6049 deployment guide
 
-This is the main deployment guide for Web Broadcaster v6042. The same Web Broadcaster package supports both a simple trusted-LAN installation and a public Internet installation. You do not need separate application binaries for the two modes.
+This is the main deployment guide for Web Broadcaster v6049. The same Web Broadcaster package supports both a simple trusted-LAN installation and a public Internet installation. You do not need separate application binaries for the two modes.
 
 Choose one of these deployment modes before editing `start.sh`:
 
@@ -10,7 +10,7 @@ Client on private LAN
        |
        | HTTP :15000
        v
-Web Broadcaster v6042
+Web Broadcaster v6049
 0.0.0.0:15000
 
 Mode B: public Internet, recommended
@@ -25,19 +25,19 @@ nginx on the same host
 127.0.0.1:15000
    |
    v
-Web Broadcaster v6042
+Web Broadcaster v6049
 ```
 
 The public mode is described in depth in `NGINX_PUBLIC_HTTPS.md`. This document explains both modes and the rules for switching safely between them.
 
 ## 1. Common requirements
 
-Web Broadcaster v6042 can run on the supported Linux build targets:
+Web Broadcaster v6049 can run on the supported Linux build targets:
 
 - Debian 12 x86-64 / amd64;
 - Raspberry Pi 5 with a 64-bit Raspberry Pi OS / Debian-based aarch64 system.
 
-Build the package using the matching v6042 buildkit. The generated Linux package contains `start.sh`, the application runtime, HTML assets, scripts, and this documentation.
+Build the package using the matching v6049 buildkit. The generated Linux package contains `start.sh`, the application runtime, HTML assets, scripts, and this documentation.
 
 The first administrator on an empty database always requires the one-time setup token. This applies in both LAN and public Internet modes.
 
@@ -188,7 +188,7 @@ Replace `radio.example.com` with the actual public hostname.
 
 In this mode Web Broadcaster is reachable only from the local nginx process through loopback. nginx is the only public web endpoint and performs TLS termination.
 
-Do not use `PROXY_COUNT="1"` together with `BIND_HOST="0.0.0.0"`. The v6042 launcher deliberately rejects that unsafe combination.
+Do not use `PROXY_COUNT="1"` together with `BIND_HOST="0.0.0.0"`. The v6049 launcher deliberately rejects that unsafe combination.
 
 For the complete nginx, DNS, router/firewall, Certbot/Let's Encrypt, Server-Sent Events, renewal, validation, upgrade, and troubleshooting procedure, continue with:
 
@@ -226,7 +226,7 @@ PROXY_COUNT=1
 
 Do not enable reverse-proxy trust merely because nginx happens to be installed on the system. Set `PROXY_COUNT=1` only when all browser traffic actually reaches Web Broadcaster through the single trusted local nginx reverse proxy.
 
-Do not set `PUBLIC_INTERNET_MODE=ON` for plain HTTP without TLS or a trusted reverse proxy. v6042 refuses that configuration by design.
+Do not set `PUBLIC_INTERNET_MODE=ON` for plain HTTP without TLS or a trusted reverse proxy. v6049 refuses that configuration by design.
 
 ## 5. Switching from LAN-only to public nginx mode
 

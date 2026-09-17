@@ -147,6 +147,16 @@ document.addEventListener('click', function(e){
     studioStopConfirmYes: document.getElementById('studio-stop-confirm-yes'),
     studioStopConfirmNo: document.getElementById('studio-stop-confirm-no'),
     studioStopConfirmClose: document.getElementById('studio-stop-confirm-close'),
+    studioEngineErrorWindow: document.getElementById('studio-engine-error-window'),
+    studioEngineErrorTitle: document.getElementById('studio-engine-error-title'),
+    studioEngineErrorMessage: document.getElementById('studio-engine-error-message'),
+    studioEngineErrorConfiguredRow: document.getElementById('studio-engine-error-configured-row'),
+    studioEngineErrorConfiguredPath: document.getElementById('studio-engine-error-configured-path'),
+    studioEngineErrorFoundRow: document.getElementById('studio-engine-error-found-row'),
+    studioEngineErrorFoundPath: document.getElementById('studio-engine-error-found-path'),
+    studioEngineErrorRepair: document.getElementById('studio-engine-error-repair'),
+    studioEngineErrorOk: document.getElementById('studio-engine-error-ok'),
+    studioEngineErrorClose: document.getElementById('studio-engine-error-close'),
     queueDeleteWindow: document.getElementById('queue-delete-window'),
     queueDeleteTitle: document.getElementById('queue-delete-title'),
     queueDeleteBody: document.getElementById('queue-delete-body'),
@@ -4828,6 +4838,136 @@ document.addEventListener('click', function(e){
     });
   }
 
+  function openStudioEngineErrorModal(options){
+    const win = els.studioEngineErrorWindow;
+    const repairBtn = els.studioEngineErrorRepair;
+    const okBtn = els.studioEngineErrorOk;
+    const closeBtn = els.studioEngineErrorClose;
+    if (!win || !okBtn) return Promise.resolve(false);
+
+    const opts = options || {};
+    const recovery = (opts.recovery && typeof opts.recovery === 'object') ? opts.recovery : null;
+    const configuredPath = recovery ? String(recovery.configured_path || recovery.missing_path || '').trim() : '';
+    const foundPath = recovery ? String(recovery.found_path || '').trim() : '';
+
+    if (els.studioEngineErrorTitle) els.studioEngineErrorTitle.textContent = String(opts.title || 'Broadcasting Error');
+    if (els.studioEngineErrorMessage) els.studioEngineErrorMessage.textContent = String(opts.detail || 'Unknown error');
+    if (els.studioEngineErrorConfiguredPath) els.studioEngineErrorConfiguredPath.textContent = configuredPath;
+    if (els.studioEngineErrorConfiguredRow) els.studioEngineErrorConfiguredRow.style.display = configuredPath ? 'flex' : 'none';
+    if (els.studioEngineErrorFoundPath) els.studioEngineErrorFoundPath.textContent = foundPath;
+    if (els.studioEngineErrorFoundRow) els.studioEngineErrorFoundRow.style.display = foundPath ? 'flex' : 'none';
+    if (repairBtn) repairBtn.style.display = foundPath ? '' : 'none';
+
+    openFloatingWindow(win);
+    return new Promise(resolve => {
+      let finished = false;
+
+      function cleanup(repairRequested){
+        if (finished) return;
+        finished = true;
+        closeFloatingWindow(win);
+        if (repairBtn) repairBtn.removeEventListener('click', onRepair, true);
+        okBtn.removeEventListener('click', onClose, true);
+        if (closeBtn) closeBtn.removeEventListener('click', onClose, true);
+        document.removeEventListener('keydown', onKeyDown, true);
+        resolve(Boolean(repairRequested));
+      }
+
+      function onRepair(event){
+        if (event) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        cleanup(true);
+      }
+
+      function onClose(event){
+        if (event) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        cleanup(false);
+      }
+
+      function onKeyDown(event){
+        if (event.key !== 'Escape') return;
+        if (win.getAttribute('aria-hidden') === 'true' || win.style.display === 'none') return;
+        event.preventDefault();
+        event.stopPropagation();
+        cleanup(false);
+      }
+
+      if (repairBtn && foundPath) repairBtn.addEventListener('click', onRepair, true);
+      okBtn.addEventListener('click', onClose, true);
+      if (closeBtn) closeBtn.addEventListener('click', onClose, true);
+      document.addEventListener('keydown', onKeyDown, true);
+      window.setTimeout(() => {
+        try {
+          if (repairBtn && foundPath) repairBtn.focus();
+          else okBtn.focus();
+        } catch (_error) {}
+      }, 0);
+    });
+  }
+
+  async function repairSoundSolutionConfigPath(){
+    try {
+      const response = await fetch('/api/studio/settings/soundsolution-recovery', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({})
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result || result.ok !== true) {
+        const detail = String((result && (result.error || result.detail)) || `HTTP ${response.status}`).trim();
+        await openStudioEngineErrorModal({title: 'SoundSolution Repair Failed', detail});
+        return false;
+      }
+      const newPath = String(result.path || '').trim();
+      if (newPath && els.studioSettingsForm) {
+        const input = els.studioSettingsForm.querySelector('input[name="soundsolution_path"]');
+        if (input) input.value = newPath;
+      }
+      return true;
+    } catch (error) {
+      const detail = String((error && error.message) || error || 'Unknown network error').trim();
+      await openStudioEngineErrorModal({title: 'SoundSolution Repair Failed', detail});
+      return false;
+    }
+  }
+
+  async function requestAudioEngineCommand(cmd, allowRecovery){
+    const actionLabel = cmd === 'start' ? 'start the station' : 'stop the station';
+    try {
+      const response = await fetch(`/audio-engine/${cmd}`, {method: 'POST'});
+      const result = await response.json().catch(() => ({}));
+      if (response.ok && result && result.success === true) return true;
+
+      const detail = String((result && (result.error || result.detail)) || `HTTP ${response.status}`).trim();
+      const recovery = (allowRecovery && cmd === 'start' && result && result.recovery) ? result.recovery : null;
+      const repairRequested = await openStudioEngineErrorModal({
+        title: cmd === 'start' ? 'Unable to Start Broadcasting' : 'Unable to Stop Broadcasting',
+        detail,
+        recovery
+      });
+      console.error(`Unable to ${actionLabel}: ${detail}`);
+
+      if (repairRequested && recovery && String(recovery.found_path || '').trim()) {
+        const repaired = await repairSoundSolutionConfigPath();
+        if (repaired) return requestAudioEngineCommand(cmd, false);
+      }
+      return false;
+    } catch (error) {
+      const detail = String((error && error.message) || error || 'Unknown network error').trim();
+      await openStudioEngineErrorModal({
+        title: cmd === 'start' ? 'Unable to Start Broadcasting' : 'Unable to Stop Broadcasting',
+        detail
+      });
+      console.error('Unable to toggle audio engine from studio', error);
+      return false;
+    }
+  }
+
   async function syncDeckOnAirButton(){
     const classicToggle = document.getElementById('audio-engine-toggle');
     if (classicToggle) {
@@ -4865,18 +5005,14 @@ document.addEventListener('click', function(e){
     setDeckOnAirButtonState(running, true);
     if (classicToggle) classicToggle.disabled = true;
 
-    try {
-      await fetch(`/audio-engine/${cmd}`, {method: 'POST'});
-    } catch (error) {
-      console.error('Unable to toggle audio engine from studio', error);
-    }
+    const requestSucceeded = await requestAudioEngineCommand(cmd, true);
 
     if (window.webBroadcasterAudioEngine && typeof window.webBroadcasterAudioEngine.refresh === 'function' && classicToggle) {
       await window.webBroadcasterAudioEngine.refresh(classicToggle);
     }
 
     await syncDeckOnAirButton();
-    return true;
+    return requestSucceeded;
   }
 
 
@@ -4944,7 +5080,7 @@ document.addEventListener('click', function(e){
         body: JSON.stringify({ target_pos: target, target_label: formatSeconds(target) })
       });
       const result = await response.json().catch(() => ({}));
-        if (!response.ok || !result || result.success === false) {
+        if (!response.ok || !result || result.success !== true) {
         throw new Error((result && result.error) || `HTTP ${response.status}`);
       }
 
@@ -9038,6 +9174,7 @@ if (completed) {
     initializeSimpleFloatingWindow(els.scriptsDeleteBackdrop);
     initializeSimpleFloatingWindow(els.encodersDeleteWindow);
     initializeSimpleFloatingWindow(els.studioStopConfirmBackdrop);
+    initializeSimpleFloatingWindow(els.studioEngineErrorWindow);
     initializeSimpleFloatingWindow(els.queueDeleteWindow);
     initializeSimpleFloatingWindow(els.playlistDeleteWindow);
     initializeSimpleFloatingWindow(els.categoryTracksDeleteWindow);
