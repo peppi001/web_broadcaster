@@ -45,13 +45,10 @@ class V6007LiveEncoderDspTests(unittest.TestCase):
 
     def test_autostart_helper_starts_only_when_station_is_on_air(self) -> None:
         calls: list[tuple[int, str]] = []
-        timestamps: list[tuple[int, str]] = []
         namespace: dict[str, object] = {
-            "datetime": datetime,
             "get_active_station_key": lambda: "db-Test.db",
             "is_station_on_air": lambda station: station == "db-Test.db",
-            "_encoder_action_native": lambda stream_id, action: calls.append((stream_id, action)),
-            "set_encoder_started_at": lambda stream_id, value: timestamps.append((stream_id, value)),
+            "_start_encoder_with_runtime_clock": lambda stream_id: calls.append((stream_id, "start")),
         }
         helper = self._load_function("_start_encoder_if_autostart_on_air", namespace)
 
@@ -59,7 +56,6 @@ class V6007LiveEncoderDspTests(unittest.TestCase):
         self.assertTrue(result["station_running"])
         self.assertTrue(result["started_immediately"])
         self.assertEqual(calls, [(17, "start")])
-        self.assertEqual(timestamps[0][0], 17)
 
         calls.clear()
         result = helper(18, autostart=False, station_key="db-Test.db")

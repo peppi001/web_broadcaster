@@ -63,8 +63,8 @@ class V6018ScriptUrlGuardTests(unittest.TestCase):
             "_set_station_script_status": lambda _station, _script_id, status: statuses.append(status),
             "_script_due_run_datetime": lambda _wait, _now: due,
             "_format_script_waiting_status": lambda *_args: "Waiting",
-            "_station_url_playback_active": lambda _station: True,
-            "_mark_station_script_url_skip": lambda station, script_id, _wait, _due, run_key: consumed.append(
+            "_station_script_interrupt_block_reason": lambda _station: "url_playback_active",
+            "_mark_station_script_skip": lambda station, script_id, _wait, _due, run_key, _reason: consumed.append(
                 (station, script_id, run_key)
             ),
         }
@@ -84,11 +84,11 @@ class V6018ScriptUrlGuardTests(unittest.TestCase):
 
     def test_script_runtime_has_all_guards_and_no_catchup(self) -> None:
         source = self._function_source("_run_station_script_once")
-        self.assertGreaterEqual(source.count("_station_url_playback_active(station_key)"), 4)
-        self.assertIn("_mark_station_script_url_skip", source)
+        self.assertGreaterEqual(source.count("_station_script_interrupt_block_reason(station_key)"), 4)
+        self.assertIn("_mark_station_script_skip", source)
         self.assertIn("_cancel_scheduled_script_queue_items", source)
         self.assertIn("guarded_queue_ids=created_queue_ids", source)
-        marker = self._function_source("_mark_station_script_url_skip")
+        marker = self._function_source("_mark_station_script_skip")
         self.assertIn("_SCRIPT_ENGINE_LAST_RUN[cache_key]", marker)
         self.assertIn("due_dt.replace(microsecond=0) + timedelta(seconds=1)", marker)
 

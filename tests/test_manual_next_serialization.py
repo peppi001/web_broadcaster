@@ -153,6 +153,56 @@ class ManualNextSerializationTests(unittest.TestCase):
         self.assertGreaterEqual(plan_calls, 2)
         self.assertEqual(direct_calls, [["next-head-line"]])
 
+
+    def test_ready_active_head_is_recovered_instead_of_reported_audible(self) -> None:
+        traces: list[tuple[str, dict]] = []
+        direct_calls: list[list[str]] = []
+
+        @contextlib.contextmanager
+        def runtime_context(_station: str):
+            yield
+
+        def direct(_station: str, *, reserved_queue_lines=None, reservation_id=""):
+            direct_calls.append(list(reserved_queue_lines or []))
+            return {
+                "success": True,
+                "target_player": "a",
+                "reservation_id": reservation_id,
+            }
+
+        service = ManualNextOrchestrator(
+            ManualNextDependencies(
+                resolve_station_key=lambda station: station,
+                get_active_station_key=lambda: "db-Jampec.db",
+                trace=lambda event, station, request_id, **fields: traces.append((event, fields)),
+                station_runtime_context=runtime_context,
+                read_reserved_plan=lambda station: (["q6551"], 6551, 379),
+                native_station_state=lambda station: {
+                    "running": True,
+                    "active_deck": "B",
+                    "queue_id": 6551,
+                    "deck_b_playback_started": False,
+                    "deck_b_lifecycle_phase": "ready",
+                    "native_audio_probe_queue_id": 6551,
+                    "native_audio_probe_status": "ready",
+                },
+                native_queue_contains_queue_id=lambda station, qid: qid == 6551,
+                perform_direct_handoff=direct,
+                signal_monitor_wake=lambda station, reason: None,
+                wake_autodj_worker=lambda: None,
+            )
+        )
+        service._wait_for_lifecycle = lambda station, qid: (True, "track_started_committed")
+        result = service._execute_one(
+            "db-Jampec.db", {"request_id": "mn-ready-recovery", "action": "next"}
+        )
+        self.assertTrue(result["success"])
+        self.assertEqual(result["target_queue_id"], 6551)
+        self.assertEqual(direct_calls, [["q6551"]])
+        self.assertTrue(
+            any(event == "manual_next_active_head_not_audible_recovery" for event, _ in traces)
+        )
+
     def test_automatic_need_next_cannot_overwrite_manual_reservation(self) -> None:
         guarded = self._function_source("_native_load_requested_next_track_guarded")
         self.assertIn("_manual_next_deck_plan_lock", guarded)

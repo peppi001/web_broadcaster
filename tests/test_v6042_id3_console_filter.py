@@ -40,7 +40,7 @@ class V6042Id3ConsoleFilterTests(unittest.TestCase):
             'strcmp(format, "Error reading comment frame, skipped\\n") == 0',
             'strcmp(format, "Error reading lyrics, skipped\\n") == 0',
             'strcmp(format, "Error reading frame %s, skipped\\n") == 0',
-            'return valid_id3_frame_name(frame_name);',
+            'return true;',
         ):
             self.assertIn(marker, self.bridge_source)
         self.assertNotIn('strcmp(frame_name, "TCON") == 0', self.bridge_source)
@@ -52,7 +52,7 @@ class V6042Id3ConsoleFilterTests(unittest.TestCase):
             "b'Error reading comment frame, skipped'",
             "b'Error reading lyrics, skipped'",
             "marker = b'Error reading frame '",
-            "return _is_id3_frame_name_bytes(frame_name)",
+            "1 <= len(frame_name) <= 64",
         ):
             self.assertIn(marker, self.app_source)
 
@@ -169,12 +169,11 @@ int main(int argc, char **argv) {
                 2,
             )
 
-    def test_frame_name_shape_guard_stays_narrow(self) -> None:
-        self.assertIn("length != 3U && length != 4U", self.bridge_source)
-        self.assertIn("value >= (unsigned char)'A'", self.bridge_source)
-        self.assertIn("value <= (unsigned char)'Z'", self.bridge_source)
-        self.assertIn("value >= (unsigned char)'0'", self.bridge_source)
-        self.assertIn("value <= (unsigned char)'9'", self.bridge_source)
+    def test_frame_skip_filter_stays_bound_to_exact_libav_parser_format(self) -> None:
+        self.assertIn('strcmp(format, "Error reading frame %s, skipped\\n") == 0', self.bridge_source)
+        self.assertNotIn("valid_id3_frame_name", self.bridge_source)
+        self.assertIn("marker = b'Error reading frame '", self.app_source)
+        self.assertIn("message.endswith(b', skipped')", self.app_source)
 
 
 if __name__ == "__main__":

@@ -27,7 +27,7 @@ class V6041Id3ConsoleFilterTests(unittest.TestCase):
             'strcmp(format, "Cannot read BOM value, input too short\\n") == 0',
             self.bridge_source,
         )
-        self.assertIn('return valid_id3_frame_name(frame_name);', self.bridge_source)
+        self.assertIn('strcmp(format, "Error reading frame %s, skipped\\n") == 0', self.bridge_source)
 
     def test_process_console_has_exact_second_line_of_defense(self) -> None:
         self.assertIn("b'Cannot read BOM value, input too short'", self.app_source)

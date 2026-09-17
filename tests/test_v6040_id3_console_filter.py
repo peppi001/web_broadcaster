@@ -25,8 +25,7 @@ class V6040Id3ConsoleFilterTests(unittest.TestCase):
             'strcmp(format, "Error reading frame %s, skipped\\n") == 0',
             self.bridge_source,
         )
-        self.assertIn('return valid_id3_frame_name(frame_name);', self.bridge_source)
-        self.assertIn("va_copy(copy, arguments)", self.bridge_source)
+        self.assertIn("(void)arguments;", self.bridge_source)
         self.assertIn("av_log_default_callback", self.bridge_source)
 
     def test_runtime_filter_hides_bom_and_tcon_but_preserves_other_errors(self) -> None:
