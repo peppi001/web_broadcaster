@@ -6,7 +6,7 @@
 
 The project combines a Python/Flask control application with a dedicated native C audio daemon. The Python application owns the web interface, authentication, station configuration, SQLite persistence, queue management, AutoDJ, scheduling, history, user management and runtime orchestration. The native daemon owns the real-time audio path: direct FFmpeg/libav decoding, A/B decks, cueing, seeking, fades, transitions, mixing, in-process SoundSolution DSP, encoding and Icecast transport.
 
-The current release is **Web Broadcaster v6042**.
+The current release is **Web Broadcaster v6072**.
 
 > **Repository model**
 >
@@ -20,7 +20,7 @@ The current release is **Web Broadcaster v6042**.
 ## Table of contents
 
 - [Project status](#project-status)
-- [v6042 release summary](#v6042-release-summary)
+- [v6072 release summary](#v6072-release-summary)
 - [Main features](#main-features)
 - [Design goals](#design-goals)
 - [System architecture](#system-architecture)
@@ -60,11 +60,11 @@ The current release is **Web Broadcaster v6042**.
 
 | Item | Current state |
 |---|---|
-| Web Broadcaster version | `6042` |
-| Native daemon protocol/version | `6042` |
-| Release buildkit revision | `build_v6042_linux-r1-id3-metadata-noise-class-filter` |
-| AMD64 build target | Debian 12, generic x86-64/SSE2 baseline |
-| ARM64 build target | Raspberry Pi 5, AArch64, Cortex-A76 |
+| Web Broadcaster version | `6072` |
+| Native daemon protocol/version | `6072` |
+| Release buildkit revision | `build_v6072_linux-r1-script-interrupt-25pct-entry` |
+| AMD64 release baseline | Debian 12 userspace in the bundled Podman builder; Debian 12/13 x86-64 hosts supported |
+| ARM64 build target | Raspberry Pi 5, AArch64, Cortex-A76, native build |
 | Audio backend | Native C daemon with direct FFmpeg 7.1.5 library integration |
 | DSP backend | In-process SoundSolution Native shared library |
 | Streaming output | Native Icecast source transport |
@@ -75,25 +75,26 @@ The current release is **Web Broadcaster v6042**.
 | Recommended public mode | nginx HTTPS reverse proxy, backend `127.0.0.1:15000` |
 | Database | SQLite |
 
-v6042 preserves the established flat final `bin/` runtime contract while adding the current production web-security/deployment model and generalized suppression of harmless malformed-ID3 parser noise. The native audio PCM path, SoundSolution DSP path, encoder path, queue, scheduler and database schema are unchanged by the v6040-v6042 console-filter work.
+v6072 keeps the established flat final `bin/` runtime contract and the public HTTPS/security model while incorporating the later native playback, scheduler, queue-recovery, build reproducibility, DSP recovery and metadata fixes. AMD64 release builds now use a controlled Debian 12 Podman userspace baseline, `ss18.dat` path failures can be repaired from the Studio modal, filename fallback metadata is conservative, and script-requested immediate playback uses a dedicated interrupt transition whose target enters at full gain only after the outgoing smoothstep fade has reached 25% gain.
 
 ---
 
-## v6042 release summary
+## v6072 release summary
 
-The current v6042 source includes all changes made after the original v6024 dual-platform buildkit release. Important user-visible and operational changes include:
+The current v6072 source includes the accumulated production fixes and behavior changes made after v6042. Important user-visible, runtime and release-engineering changes include:
 
-- smoother Studio playback-position display using a monotonic browser clock without increasing backend status-poll load;
-- CSS-only crossed hammer/screwdriver Configure icons and removal of obsolete SVG assets;
-- public-Internet hardening of the Flask application, including deny-by-default authentication, CSRF protection, secure session handling, rate limiting, trusted-host support and first-run setup tokens;
-- replacement of the Flask/Werkzeug development server with Cheroot;
-- optional direct Cheroot TLS support;
-- preferred nginx reverse-proxy deployment with Web Broadcaster bound to `127.0.0.1` and nginx terminating HTTPS;
-- dedicated deployment documentation for trusted-LAN and nginx/Certbot/Let's Encrypt operation;
-- embedded local-file artist/title metadata taking priority over filename parsing, with filename parsing retained as fallback;
-- hardened trusted-host error handling under Flask 3.1;
-- deterministic native regression synchronization on loaded build hosts;
-- generalized filtering of known harmless FFmpeg 7.1.5 malformed-ID3 metadata diagnostics while preserving genuine libav/container/decoder/encoder/I/O errors.
+- bounded native PCM analysis for long local tracks, preserving cue-in and trailing-silence detection without decoding the entire file before playback;
+- safer corrupt-input handling so malformed audio is isolated to the affected track instead of destabilizing the shared native daemon;
+- stronger native queue/deck recovery for stale plans, short tracks, exact-time handoffs and inactive-deck preload races;
+- per-station scheduled-script workers and exact-time protection so a slow or failing script on one station does not block other stations;
+- improved AutoDJ lookahead behavior for singleton `NoRules` categories while preserving exact rotation slots;
+- a live-output watchdog race fix so adding another encoder branch does not spuriously restart an already-running shared pipeline;
+- reproducible AMD64 releases through a bundled Debian 12 Podman build baseline, including a final GLIBC 2.36 ABI ceiling audit for Debian 12 compatibility;
+- visible Studio ON-AIR/OFF-AIR failures through the existing floating modal UI instead of browser alerts;
+- verified `ss18.dat` recovery: when the stored DSP path is stale, Web Broadcaster searches the current installation for the known bundled file, shows the stale and discovered paths, can update the active station setting, and retries ON AIR once;
+- conservative filename-derived fallback metadata: leading track numbers are stripped only from unambiguous track-number forms, and artist/title splitting occurs only on the explicit spaced `Artist - Title` delimiter;
+- a script-only immediate-play interrupt transition: the currently audible track fades from its exact current position, the prepared script target remains silent until the outgoing smoothstep gain reaches 25%, then starts immediately at 100% gain with no fade-in; Now Playing and Icecast metadata change at that actual entry point;
+- restoration and isolation of the established Manual Next, hard-handoff and seek guards so the script-interrupt path does not alter those stable control paths.
 
 The complete chronological history remains in `version.txt`.
 
@@ -127,9 +128,10 @@ The complete chronological history remains in `version.txt`.
 - Seek support.
 - Fade-in, fade-out and transition timing.
 - Crossfade and trailing-silence handling.
-- Native PCM analysis and duration verification.
-- Corrupt-input and early-EOF recovery.
-- Stable pause/resume and stop/start lifecycle handling.
+- Script-only interrupt transitions with delayed full-gain entry and no fade-in on the inserted script track.
+- Native PCM analysis and duration verification, including bounded head/tail analysis for long local tracks.
+- Corrupt-input, early-EOF and stale-plan recovery that isolates failures to the affected track/station.
+- Stable pause/resume, stop/start, Manual Next and hard-handoff lifecycle handling.
 
 ### AutoDJ and queue management
 
@@ -140,8 +142,10 @@ The complete chronological history remains in `version.txt`.
 - Category-based AutoDJ rotation.
 - Recent-history and repeat protection.
 - Queue refill and startup bootstrap.
+- Singleton `NoRules` category handling that preserves rotation slots even when lookahead spans multiple cycles.
 - Playback history.
 - Native event-driven queue removal and history commits.
+- Recovery from exhausted or stale short-lived Python queue plans by re-reading the persisted queue when the native engine requests a next track.
 
 ### Scheduling and scripts
 
@@ -149,7 +153,9 @@ The complete chronological history remains in `version.txt`.
 - Enable, disable, edit and delete scheduler rules.
 - Script creation, editing, start and stop controls.
 - Automatic on-air script start and off-air script stop behavior.
-- Protection against scheduled scripts interrupting an already active URL source.
+- Per-station daemon script workers so one station's slow or failing script cannot block another station.
+- Protection against scheduled scripts interrupting protected URL or Scheduler-origin playback.
+- Immediate-play script inserts use the dedicated script-interrupt transition instead of Manual Next semantics.
 - `.wbs` script support.
 
 ### Encoding and streaming
@@ -159,9 +165,10 @@ The complete chronological history remains in `version.txt`.
 - AAC-LC, HE-AAC and HE-AACv2 through `libfdk_aac`.
 - Native Icecast source transport.
 - Per-output connection state, encoded FIFO, reconnect handling and metadata state.
+- Live addition of output branches without intentionally restarting already-running outputs; watchdog publication is synchronized before a new branch becomes visible.
 - Persistent Icecast stream identity fields.
 - Metadata updates without spawning external encoder processes.
-- Embedded artist/title tags preferred for local media; filename parsing remains a fallback.
+- Embedded artist/title tags preferred for local media; conservative filename parsing remains the fallback.
 
 ### SoundSolution DSP
 
@@ -169,6 +176,7 @@ The complete chronological history remains in `version.txt`.
 - One independent DSP context per station.
 - Station-specific `.dat` configuration.
 - Live dry/DSP source switching without restarting the encoder or reconnecting Icecast.
+- Verified recovery for a stale/missing stored `ss18.dat` path through the Studio error modal.
 - No DSP subprocess, pipe, FIFO, Wine, AppImage or FUSE dependency.
 - AMD64 and Raspberry Pi 5 use architecture-specific validated SoundSolution runtimes.
 
@@ -275,7 +283,7 @@ The Python side remains the owner of business logic. The native side remains the
 
 ## Deployment architecture
 
-v6042 supports three web deployment arrangements. Two are intended as normal operating modes; direct TLS is available as an alternative.
+v6072 supports three web deployment arrangements. Two are intended as normal operating modes; direct TLS is available as an alternative.
 
 ### Trusted LAN
 
@@ -287,7 +295,7 @@ Trusted LAN browser
 0.0.0.0:15000
         |
         v
-Web Broadcaster v6042 / Cheroot
+Web Broadcaster v6072 / Cheroot
 ```
 
 This is the default generated `start.sh` mode. It requires no nginx, public domain, Certbot or TLS certificate. Because traffic is plain HTTP, use it only on a trusted private network and do not forward TCP 15000 from the Internet.
@@ -306,7 +314,7 @@ nginx on the same host
 127.0.0.1:15000
    |
    v
-Web Broadcaster v6042 / Cheroot
+Web Broadcaster v6072 / Cheroot
 ```
 
 In this mode nginx is the only public HTTP/HTTPS endpoint. Web Broadcaster listens only on loopback. TCP 15000 must not be publicly forwarded.
@@ -403,12 +411,16 @@ The complete native audio path exists in `web_broadcaster_engine` through linked
 
 ## Supported platforms
 
-### Debian 12 AMD64
+### AMD64 / x86-64
 
-- Native build host: Debian 12 x86-64.
+- Supported release-build hosts: Debian 12 or Debian 13 x86-64 with Podman installed.
+- Release userspace baseline: bundled Debian 12 (bookworm) Podman builder image.
+- Python baseline inside the builder: Python 3.11 with matching shared `libpython`.
 - Target architecture: generic x86-64 with an SSE2 baseline.
 - FFmpeg: generic AMD64 build.
 - SoundSolution: Native v6.1.0, `native-binary64-fast` arithmetic mode.
+- Final package ABI audit rejects packaged ELF files requiring GLIBC symbols newer than 2.36.
+- Intended runtime compatibility: Debian 12 and Debian 13 AMD64.
 - No AVX, AVX2 or FMA requirement is introduced by the SoundSolution baseline.
 
 ### Raspberry Pi 5
@@ -420,7 +432,7 @@ The complete native audio path exists in `web_broadcaster_engine` through linked
 - SoundSolution: Native v6.0.0 structured-process runtime.
 - The builder rejects generic ARM64 systems that are not identified as Raspberry Pi 5.
 
-### Native-only build policy
+### Native-target build policy
 
 The official build script intentionally does not provide:
 
@@ -430,7 +442,7 @@ The official build script intentionally does not provide:
 - Windows support;
 - macOS support.
 
-Each final package is built and tested natively on its target architecture.
+AMD64 compilation runs inside the controlled Debian 12 container baseline on the same x86-64 architecture. Raspberry Pi 5 packages are built natively on the Pi 5 target.
 
 ---
 
@@ -438,8 +450,8 @@ Each final package is built and tested natively on its target architecture.
 
 | Component | Version / mode |
 |---|---|
-| Web Broadcaster | `6042` |
-| Native audio daemon | `6042` |
+| Web Broadcaster | `6072` |
+| Native audio daemon | `6072` |
 | FFmpeg/libav | `7.1.5` |
 | FFmpeg runtime ID | `7.1.5-for-web-broadcaster-r13` |
 | AMD64 SoundSolution | `6.1.0`, `native-binary64-fast` |
@@ -464,6 +476,7 @@ The Git repository contains the unpacked, architecture-neutral Web Broadcaster s
 ```text
 web-broadcaster/
 ├── app.py
+├── cheroot_cleanup.py
 ├── requirements.txt
 ├── pytest.ini
 ├── version.txt
@@ -530,6 +543,7 @@ web-broadcaster/
 
 ### Important source directories
 
+- `cheroot_cleanup.py` — Web Broadcaster-specific Cheroot connection cleanup used to close buffered response writers before the underlying socket.
 - `audio_engine/` — Python contract and lifecycle integration for the managed native daemon.
 - `native_engine/` — C implementation of decoding, timing, mixing, DSP, encoding and Icecast output.
 - `autodj/` — AutoDJ selection and repeat-protection service.
@@ -580,33 +594,33 @@ The Git repository is the source of truth for:
 
 ### Release assets
 
-The v6042 release artifacts currently have these identities:
+The v6072 release artifacts have these identities for the current release files:
 
 | File | SHA-256 |
 |---|---|
-| `Web_Broadcaster_v6042.zip` | `5811aaf71e9f2a06a23bbed86a2821741454df4ad098be9e090b110b9abb5171` |
-| `Web_Broadcaster_v6042_buildkit.zip` | `19b189e886e40862274bd0a44469b8662f81c52cfee8bd6b1d5f57e6596b91be` |
-| `build_v6042_linux.sh` | `0dd2759c6e0d825314928a599114169f59ed0bfb066912fc16c4204092a69441` |
+| `Web_Broadcaster_v6072.zip` | `239bd456a91ce744137efbb3878a3c490aeea562779fa50eb28ecb0b3cb5f439` |
+| `Web_Broadcaster_v6072_buildkit.zip` | `55ecbaff2c6189345feac6bade9b4a052cf95bec2cbbc5ff3bf131fd31c24b44` |
+| `build_v6072_linux.sh` | `cd96038eb3948ee909c5d8a415a4107421398e005ca1bd2e53cd93e7664eac30` |
 
 The build script is also included inside the complete buildkit. Publishing it separately is convenient for inspection, but the version-matched buildkit remains the authoritative build input.
 
 After successful native builds, a Release may also contain:
 
 ```text
-Web_Broadcaster_Linux_v6042_amd64.tar.gz
-Web_Broadcaster_Linux_v6042_amd64.tar.gz.sha256
-Web_Broadcaster_Linux_v6042_arm64_rpi5.tar.gz
-Web_Broadcaster_Linux_v6042_arm64_rpi5.tar.gz.sha256
+Web_Broadcaster_Linux_v6072_amd64.tar.gz
+Web_Broadcaster_Linux_v6072_amd64.tar.gz.sha256
+Web_Broadcaster_Linux_v6072_arm64_rpi5.tar.gz
+Web_Broadcaster_Linux_v6072_arm64_rpi5.tar.gz.sha256
 ```
 
-The complete buildkit contains the fixed FFmpeg and SoundSolution packages required for native dependency staging. The Python build stage still requires network access to install the pinned Python packages unless a local Python package mirror/cache provides them.
+The complete buildkit contains the fixed FFmpeg and SoundSolution packages required for native dependency staging, plus the Debian 12 Containerfile used for reproducible AMD64 builds. The Python build stage still requires network access to install the pinned Python packages unless a local package mirror/cache provides them.
 
-### Current v6042 buildkit identity
+### Current v6072 buildkit identity
 
 ```text
-File:   Web_Broadcaster_v6042_buildkit.zip
-SHA256: 19b189e886e40862274bd0a44469b8662f81c52cfee8bd6b1d5f57e6596b91be
-Revision: build_v6042_linux-r1-id3-metadata-noise-class-filter
+File:     Web_Broadcaster_v6072_buildkit.zip
+SHA256:   55ecbaff2c6189345feac6bade9b4a052cf95bec2cbbc5ff3bf131fd31c24b44
+Revision: build_v6072_linux-r1-script-interrupt-25pct-entry
 ```
 
 Do not replace a published asset under the same version and filename. Publish a new Web Broadcaster version for any changed released artifact.
@@ -622,41 +636,41 @@ The Release buildkit is the authoritative and recommended build method.
 Download:
 
 ```text
-Web_Broadcaster_v6042_buildkit.zip
+Web_Broadcaster_v6072_buildkit.zip
 ```
 
 Verify against the published SHA-256:
 
 ```bash
-sha256sum Web_Broadcaster_v6042_buildkit.zip
+sha256sum Web_Broadcaster_v6072_buildkit.zip
 ```
 
 Expected:
 
 ```text
-19b189e886e40862274bd0a44469b8662f81c52cfee8bd6b1d5f57e6596b91be
+55ecbaff2c6189345feac6bade9b4a052cf95bec2cbbc5ff3bf131fd31c24b44
 ```
 
 ### 2. Extract
 
 ```bash
-unzip Web_Broadcaster_v6042_buildkit.zip
-cd Web_Broadcaster_v6042_buildkit
+unzip Web_Broadcaster_v6072_buildkit.zip
+cd Web_Broadcaster_v6072_buildkit
 ```
 
-### 3. Start the native build
+### 3. Start the release build
 
 ```bash
-chmod +x build_v6042_linux.sh
-./build_v6042_linux.sh
+chmod +x build_v6072_linux.sh
+./build_v6072_linux.sh
 ```
 
-The same command is used on Debian 12 AMD64 and Raspberry Pi 5. The script detects the native architecture and selects the correct dependency set automatically.
+On AMD64, the script transparently creates or reuses the bundled Debian 12 Podman builder image and re-enters the same build script inside that controlled userspace. On Raspberry Pi 5, the build remains native. No manual `podman run` command is required.
 
 ### Optional source-test skip
 
 ```bash
-RUN_SOURCE_TESTS=0 ./build_v6042_linux.sh
+RUN_SOURCE_TESTS=0 ./build_v6072_linux.sh
 ```
 
 Skipping tests is intended only for diagnosis. Normal and release builds should keep the default:
@@ -671,29 +685,20 @@ The complete source regression suite is deliberately enabled by default.
 
 ## Build prerequisites
 
-### Debian 12 AMD64
+### AMD64 host — Debian 12 or Debian 13
 
-Install the normal build tools:
+The AMD64 release toolchain runs inside the bundled Debian 12 Podman image. The host therefore only needs the tools required to unpack the buildkit and run Podman:
 
 ```bash
 sudo apt update
-sudo apt install -y \
-  build-essential \
-  python3 \
-  python3-venv \
-  python3-pip \
-  unzip \
-  tar \
-  binutils \
-  file \
-  ca-certificates
+sudo apt install -y podman unzip
 ```
 
-The script also expects standard commands such as `ldd`, `sha256sum`, `find`, `sort`, `install` and `readelf`, which are part of a normal Debian build environment.
+The host does **not** need its own Python, FFmpeg, Node.js, GCC or PyInstaller for the release build. Those tools are supplied inside the validated Debian 12 builder image.
 
 ### Raspberry Pi 5
 
-Use a 64-bit Raspberry Pi OS/Debian-compatible installation and install the same toolset:
+Use a 64-bit Raspberry Pi OS/Debian-compatible installation and install the native build tools:
 
 ```bash
 sudo apt update
@@ -706,62 +711,61 @@ sudo apt install -y \
   tar \
   binutils \
   file \
-  ca-certificates
+  ca-certificates \
+  ffmpeg
 ```
 
-The builder reads `/proc/device-tree/model` and requires `Raspberry Pi 5` in the model string.
+The script reads `/proc/device-tree/model` and requires `Raspberry Pi 5` in the model string.
 
 ### Network requirement
 
-The official builder creates an isolated Python virtual environment and installs pinned packages. Network access to the configured Python package index is therefore required unless those packages are already available from a local cache or mirror.
+On AMD64, network access is required when the Debian 12 builder image is first created and when the build installs pinned Python packages. Later container-image creation may be skipped when the validated image already matches the bundled `Containerfile.debian12`.
 
-### Optional Node.js
+On Raspberry Pi 5, the isolated Python build environment likewise requires access to the configured Python package index unless the required packages are available through a local cache or mirror.
 
-Node.js is not a build dependency. When available, an additional JavaScript execution regression test runs. Without Node.js, that test is reported as skipped.
+### Node.js
+
+Node.js is included in the Debian 12 AMD64 builder image, so the JavaScript execution regression is expected to run there. On Raspberry Pi 5, Node.js is optional; when present, the additional JavaScript regression runs, otherwise it is reported as skipped.
 
 ---
 
 ## Build process
 
-The v6042 build script performs the following stages.
+The v6072 build script performs the following release stages.
 
-1. **Host validation**
-   - verifies Linux;
-   - identifies AMD64 or Raspberry Pi 5 AArch64;
-   - rejects unsupported architectures.
+1. **AMD64 container dispatch or native Pi 5 selection**
+   - on x86-64, verifies the buildkit before launch, creates/reuses the versioned Debian 12 Podman image, and re-enters the same build script in the container;
+   - on AArch64, requires a real Raspberry Pi 5 and builds natively.
 
-2. **Buildkit integrity check**
+2. **Controlled baseline validation**
+   - verifies Linux and the supported architecture;
+   - AMD64 inner builds must report Debian 12 and Python 3.11;
+   - verifies the matching shared `libpython` and required release tools.
+
+3. **Buildkit integrity check**
    - verifies `SHA256SUMS.txt`;
-   - refuses to continue if an included source or dependency archive has changed.
+   - refuses to continue if an included top-level release input has changed.
 
-3. **Source extraction**
-   - extracts `Web_Broadcaster_v6042.zip`;
+4. **Source extraction and version contract**
+   - extracts `Web_Broadcaster_v6072.zip`;
    - verifies the architecture-neutral source layout;
-   - confirms `APP_VERSION=6042` and native daemon version `6042`.
+   - confirms `APP_VERSION=6072` and native daemon version `6072`.
 
-4. **Dependency selection**
-   - selects the matching FFmpeg SDK/runtime;
-   - selects the matching SoundSolution runtime;
-   - checks package presence and hashes.
+5. **Dependency selection and staging**
+   - selects the matching FFmpeg SDK/runtime and SoundSolution runtime;
+   - stages FFmpeg headers, the diagnostic FFmpeg executable/private libraries and SoundSolution files in the temporary source tree;
+   - stages `libsoundsolution.so.2` and `ss18.dat` and verifies their expected identities.
 
-5. **Temporary dependency staging**
-   - stages FFmpeg headers under `native_engine/ffmpeg_sdk/include/`;
-   - stages the diagnostic FFmpeg executable as `bin/ffmpeg` for tests/build checks;
-   - stages private FFmpeg shared libraries under `lib/`;
-   - stages `libsoundsolution.so.2` and `ss18.dat` under `bin/soundsolution/`;
-   - stages the matching SoundSolution API header.
-
-6. **Architecture verification**
-   - verifies ELF architecture for FFmpeg, SoundSolution and private libraries;
-   - checks component versions and build IDs.
+6. **Architecture/native dependency verification**
+   - verifies ELF architecture for FFmpeg and SoundSolution;
+   - checks component versions, runtime IDs, SoundSolution arithmetic mode and required hashes.
 
 7. **Source-tree native engine build**
    - rebuilds `web_broadcaster_engine`;
-   - verifies linked libraries and source-tree RPATH.
+   - verifies linked libraries and the source-tree RPATH.
 
 8. **SoundSolution smoke test**
    - loads the library through its C API;
-   - verifies version and arithmetic mode;
    - loads `ss18.dat`;
    - processes real PCM;
    - validates Raspberry Pi 5 structured-process identity where applicable.
@@ -773,44 +777,30 @@ The v6042 build script performs the following stages.
 
 10. **Regression tests**
     - runs the complete source regression suite by default;
-    - shows pytest progress live;
-    - writes the complete output to `build_work/source-regression.log`;
-    - runs the optional JavaScript execution test when Node.js is available.
+    - shows pytest progress live and writes the same output to `build_work/source-regression.log`;
+    - runs the JavaScript execution regression when Node.js is available (included in the AMD64 builder image).
 
-11. **Final flat-bin preparation**
-    - patches the temporary build tree for the packaged application layout;
-    - changes the native daemon final RPATH to `$ORIGIN`;
-    - rebuilds the native daemon for the final package.
+11. **Final flat-bin preparation and PyInstaller build**
+    - patches the temporary build tree for the final package layout;
+    - changes the native daemon final RPATH to `$ORIGIN` and rebuilds it;
+    - creates the PyInstaller `onedir` application with the Python runtime under `bin/_internal/`.
 
-12. **PyInstaller build**
-    - creates an `onedir` application;
-    - places the Python runtime under `bin/_internal/`.
+12. **Package assembly and cleanup**
+    - copies the application, native daemon, private libraries, `html/`, `script/` and `docs/`;
+    - generates `start.sh` and package `README.txt`;
+    - removes build-only files and diagnostic FFmpeg/ffprobe executables;
+    - materializes symlinks as regular files and refuses to package remaining symlinks.
 
-13. **Package assembly**
-    - copies the application, native daemon and private libraries;
-    - copies `html/`, `script/` and `docs/`;
-    - generates `start.sh` and package `README.txt`.
-
-14. **Package cleanup**
-    - removes build-only files;
-    - removes diagnostic FFmpeg/ffprobe command-line binaries from the final application;
-    - materializes all symlinks as regular files;
-    - refuses to package any remaining symlink.
-
-15. **Final verification**
-    - verifies the exact allowed root and `bin/` entries;
-    - checks required deployment documentation;
-    - checks file modes;
-    - verifies SONAME and RPATH;
-    - runs `ldd` and confirms private FFmpeg/SoundSolution resolution;
+13. **Final verification**
+    - verifies the exact root and `bin/` package contracts, documentation, file modes, SONAME/RPATH and private-library resolution;
+    - verifies `ss18.dat` did not change and does not have executable mode bits;
     - runs a packaged native-daemon smoke test;
-    - verifies the complete `start.sh` security/deployment contract.
+    - on AMD64, audits every packaged ELF and rejects any GLIBC requirement newer than 2.36.
 
-16. **Archive creation**
+14. **Archive creation**
     - creates the final `.tar.gz`;
-    - verifies that the archive contains no symlinks;
-    - verifies required deployment documentation in the archive;
-    - writes a `.sha256` file.
+    - verifies the archive is symlink-free and contains the required deployment documentation;
+    - writes the package `.sha256` file.
 
 ---
 
@@ -819,21 +809,21 @@ The v6042 build script performs the following stages.
 ### AMD64
 
 ```text
-Web_Broadcaster_Linux_v6042_amd64.tar.gz
-Web_Broadcaster_Linux_v6042_amd64.tar.gz.sha256
+Web_Broadcaster_Linux_v6072_amd64.tar.gz
+Web_Broadcaster_Linux_v6072_amd64.tar.gz.sha256
 ```
 
 ### Raspberry Pi 5
 
 ```text
-Web_Broadcaster_Linux_v6042_arm64_rpi5.tar.gz
-Web_Broadcaster_Linux_v6042_arm64_rpi5.tar.gz.sha256
+Web_Broadcaster_Linux_v6072_arm64_rpi5.tar.gz
+Web_Broadcaster_Linux_v6072_arm64_rpi5.tar.gz.sha256
 ```
 
 The top-level directory inside either archive is:
 
 ```text
-Web_Broadcaster_Linux_v6042/
+Web_Broadcaster_Linux_v6072/
 ```
 
 The architecture appears in the archive filename, while the extracted application directory remains consistent.
@@ -842,10 +832,10 @@ The architecture appears in the archive filename, while the extracted applicatio
 
 ## Final package layout
 
-The final v6042 package preserves the established flat `bin/` runtime contract and includes the deployment documentation introduced in the public-HTTPS release line.
+The final v6072 package preserves the established flat `bin/` runtime contract and includes the deployment documentation introduced in the public-HTTPS release line.
 
 ```text
-Web_Broadcaster_Linux_v6042/
+Web_Broadcaster_Linux_v6072/
 ├── start.sh
 ├── README.txt
 ├── bin/
@@ -924,27 +914,27 @@ RPATH = $ORIGIN
 AMD64 example:
 
 ```bash
-sha256sum -c Web_Broadcaster_Linux_v6042_amd64.tar.gz.sha256
+sha256sum -c Web_Broadcaster_Linux_v6072_amd64.tar.gz.sha256
 ```
 
 Raspberry Pi 5 example:
 
 ```bash
-sha256sum -c Web_Broadcaster_Linux_v6042_arm64_rpi5.tar.gz.sha256
+sha256sum -c Web_Broadcaster_Linux_v6072_arm64_rpi5.tar.gz.sha256
 ```
 
 ### 2. Extract
 
 ```bash
-tar -xzf Web_Broadcaster_Linux_v6042_amd64.tar.gz
-cd Web_Broadcaster_Linux_v6042
+tar -xzf Web_Broadcaster_Linux_v6072_amd64.tar.gz
+cd Web_Broadcaster_Linux_v6072
 ```
 
 Use the ARM64 archive name on Raspberry Pi 5.
 
 ### 3. Review `start.sh`
 
-v6042 exposes the deployment/security settings at the beginning of `start.sh`:
+v6072 exposes the deployment/security settings at the beginning of `start.sh`:
 
 ```bash
 PORT="15000"
@@ -972,7 +962,7 @@ The generated defaults are for a trusted private LAN.
 Expected trusted-LAN startup output includes:
 
 ```text
-Web Broadcaster v6042 is starting with Cheroot on 0.0.0.0:15000.
+Web Broadcaster v6072 is starting with Cheroot on 0.0.0.0:15000.
 
 Open http://localhost:15000 in your browser.
 ```
@@ -1194,13 +1184,13 @@ The default packaged DSP configuration is:
 bin/ss18.dat
 ```
 
-The application resolves legacy stored paths to the packaged native configuration where appropriate. The configured file must remain readable.
+The application resolves the normal packaged path for first-run defaults. If a station database contains a stale `ss18.dat` path and ON AIR startup fails, Studio shows the exact error in the normal floating modal, searches the current installation for the verified bundled `ss18.dat`, and—when a valid match is found—offers `Use found path and retry`. Accepting the repair updates only the active station's stored DSP path and retries ON AIR once.
 
 ---
 
 ## Web security model
 
-v6042 includes application-level controls intended to support safe HTTPS deployment. HTTPS is still required for public network exposure.
+v6072 includes application-level controls intended to support safe HTTPS deployment. HTTPS is still required for public network exposure.
 
 ### Authentication
 
@@ -1208,7 +1198,7 @@ v6042 includes application-level controls intended to support safe HTTPS deploym
 - Only login, first-run setup and static assets are intentionally public.
 - API requests without an authenticated session return an unauthorized response instead of silently bypassing login.
 - Passwords are stored as one-way Werkzeug password hashes, not plaintext user passwords.
-- New and changed passwords must be **12 to 256 characters** in v6042.
+- New and changed passwords must be **12 to 256 characters** in v6072.
 - Login errors deliberately use a generic invalid-credentials message.
 
 ### Session protection
@@ -1260,7 +1250,7 @@ Reverse-proxy mode relies on the configured trusted proxy count so the applicati
 
 ### Security response headers
 
-v6042 sets, among others:
+v6072 sets, among others:
 
 - `X-Content-Type-Options: nosniff`;
 - `X-Frame-Options: DENY`;
@@ -1276,7 +1266,7 @@ The current CSP retains `'unsafe-inline'` for scripts/styles because the existin
 
 ### Current authentication boundary
 
-v6042 does **not** implement multi-factor authentication. For public deployment use a long, strong, unique password and protect the account credentials accordingly.
+v6072 does **not** implement multi-factor authentication. For public deployment use a long, strong, unique password and protect the account credentials accordingly.
 
 ---
 
@@ -1299,9 +1289,9 @@ logs/native_engine.log
 
 Routine Python/Werkzeug/Cheroot warning traffic and native-daemon stdout are suppressed. Genuine Python, native-daemon and libav errors remain visible on the console.
 
-### Malformed ID3 metadata noise filtering
+### Malformed metadata and recoverable MP3 noise filtering
 
-v6042 deliberately suppresses a narrow class of known harmless FFmpeg 7.1.5 ID3 parser diagnostics that can occur while scanning malformed MP3 metadata. This includes the exact BOM/comment/lyrics parser messages and `Error reading frame <ID>, skipped` only when `<ID>` has the shape of a valid 3/4-character uppercase-alphanumeric ID3 frame identifier.
+The current release deliberately suppresses a narrow class of known harmless FFmpeg 7.1.5 metadata diagnostics that can occur while scanning malformed MP3 tags. The native libav callback matches the exact FFmpeg parser format `Error reading frame %s, skipped`; the process-console fallback accepts only the same exact record shape with an uppercase-alphanumeric/underscore metadata label of bounded length. This covers both normal ID3 frame identifiers and the longer normalized labels observed in production.
 
 Examples covered by the regression tests include malformed:
 
@@ -1310,11 +1300,14 @@ COMM
 TENC
 TCOP
 TOPE
+LYRICIST
+MIXARTIST
+INVOLVEDPEOPLE
 ```
 
-The same filtering is applied at the native libav callback and at the inherited process-console path so known metadata-only noise does not leak to the terminal, systemd output or Settings Console.
+The current release also suppresses a small set of known recoverable FFmpeg MP3 frame diagnostics only for `mp3`/`mp3float` decoder contexts, where the native decoder already handles the corresponding invalid frame through bounded corrupt-input recovery.
 
-This filter does **not** intentionally suppress generic container, decoder, encoder, network or I/O errors.
+The same narrow filtering policy is applied at the native libav callback and inherited process-console path so known metadata/isolated-frame noise does not flood the terminal, systemd output or Settings Console. Generic container, decoder, encoder, network and I/O errors remain visible.
 
 ### Debug mode
 
@@ -1430,22 +1423,23 @@ Major test areas include:
 - station lifecycle;
 - queue and history persistence;
 - AutoDJ repeat rules and rotation;
-- scheduler/script behavior;
+- scheduler/script behavior, per-station worker isolation and exact-time interruption guards;
+- script-only interrupt timing, zero-ramp full-gain entry and preservation of Manual Next/hard-handoff semantics;
 - native engine protocol;
-- deck load identity and preload reuse;
+- deck load identity, reservation safety and preload reuse;
 - cue, fade, seek and transition behavior;
 - native PCM analysis;
 - duration self-healing;
 - corrupt input and early EOF handling;
 - Icecast output;
 - multiple encoder branches;
-- SoundSolution integration;
+- SoundSolution integration, `ss18.dat` integrity and Studio path recovery;
 - live dry/DSP switching;
-- logging gates;
+- logging gates and malformed metadata/MP3 decoder-noise filtering;
 - client disconnect handling;
 - final HTML layout;
 - bundled FFmpeg runtime behavior;
-- malformed-ID3 console filtering using real FFmpeg 7.1.5 parser paths;
+- Debian 12 AMD64 container-baseline and final GLIBC ABI auditing;
 - final package layout, documentation presence and private-library resolution.
 
 ### Authoritative test command
@@ -1453,7 +1447,7 @@ Major test areas include:
 The official test run occurs inside the buildkit:
 
 ```bash
-./build_v6042_linux.sh
+./build_v6072_linux.sh
 ```
 
 The build script stages the architecture-matched FFmpeg and SoundSolution dependencies before running:
@@ -1490,14 +1484,26 @@ Any changed or missing included artifact causes an immediate build failure.
 
 ### Source/build-script identity
 
-The current v6042 buildkit manifest includes:
+The current v6072 buildkit manifest includes:
 
 ```text
-Web_Broadcaster_v6042.zip
-  5811aaf71e9f2a06a23bbed86a2821741454df4ad098be9e090b110b9abb5171
+Web_Broadcaster_v6072.zip
+  239bd456a91ce744137efbb3878a3c490aeea562779fa50eb28ecb0b3cb5f439
 
-build_v6042_linux.sh
-  0dd2759c6e0d825314928a599114169f59ed0bfb066912fc16c4204092a69441
+build_v6072_linux.sh
+  cd96038eb3948ee909c5d8a415a4107421398e005ca1bd2e53cd93e7664eac30
+
+Containerfile.debian12
+  a38fa2617ce5dc37f48dab364094c651afdb380609456102aced268cefa0c2ea
+
+.containerignore
+  7cc3dd6eb819949833ea31dc1f3d3972f049a71bdaa519e229acc585476d6844
+```
+
+The outer release buildkit ZIP for this README has SHA-256:
+
+```text
+55ecbaff2c6189345feac6bade9b4a052cf95bec2cbbc5ff3bf131fd31c24b44
 ```
 
 ### Private-library verification
@@ -1578,7 +1584,7 @@ Do not rewrite or truncate the existing history. Append a new chronological entr
 
 A final binary release should be built and validated natively on:
 
-- Debian 12 AMD64;
+- AMD64 through the Debian 12 Podman release baseline;
 - Raspberry Pi 5 AArch64.
 
 The normal build keeps `RUN_SOURCE_TESTS=1`.
@@ -1594,13 +1600,13 @@ When using the GitHub web interface, upload/replace the current source files, co
 Use the immutable version tag:
 
 ```text
-v6042
+v6072
 ```
 
 Release title:
 
 ```text
-Web Broadcaster v6042
+Web Broadcaster v6072
 ```
 
 ### 6. Publish Release assets
@@ -1609,7 +1615,7 @@ Attach the architecture-neutral source ZIP, complete buildkit and their publishe
 
 ### 7. Never move a published tag
 
-Do not modify or force-move `v6042` after publication. A correction that changes released source or artifacts must become a new Web Broadcaster version.
+Do not modify or force-move `v6072` after publication. A correction that changes released source or artifacts must become a new Web Broadcaster version.
 
 ---
 
@@ -1642,7 +1648,7 @@ Example commit messages:
 Harden trusted-host routing for nginx deployment
 Preserve embedded ID3 artist/title metadata priority
 Generalize malformed ID3 console-noise filtering
-Release Web Broadcaster v6042
+Release Web Broadcaster v6072
 ```
 
 ### Suggested `.gitignore`
@@ -1739,15 +1745,21 @@ Actions:
 
 ### Required command not found
 
-Install the missing Debian package. Common requirements are covered by:
+For an AMD64 release host, the normal outer prerequisites are Podman and the utility used to extract the buildkit. On Debian 12/13:
 
 ```bash
-sudo apt install -y build-essential python3 python3-venv python3-pip unzip tar binutils file ca-certificates
+sudo apt install -y podman unzip
 ```
+
+The release compiler, Python 3.11, shared libpython, FFmpeg/FFprobe, Node.js and PyInstaller run inside the bundled Debian 12 builder image. If the error is emitted **inside** that builder, re-create the image by removing the stale `localhost/web-broadcaster-builder:debian12` image and rerun the unchanged build command.
+
+On Raspberry Pi 5, install the native build prerequisites from the [Build prerequisites](#build-prerequisites) section.
 
 ### Python virtual environment cannot be created
 
-Install:
+On AMD64 this normally indicates a damaged or stale Debian 12 builder image rather than a missing host Python package, because Python 3.11 and `python3-venv` belong to the container baseline. Rebuild the Podman image and rerun `./build_v6072_linux.sh`.
+
+On Raspberry Pi 5, install:
 
 ```bash
 sudo apt install -y python3-venv
@@ -1791,7 +1803,7 @@ Raspberry Pi 5
 
 ### Regression test cannot find FFmpeg libraries
 
-Use the current v6042 buildkit. The source-build staging layout intentionally differs from the final installable package:
+Use the current v6072 buildkit. The source-build staging layout intentionally differs from the final installable package:
 
 ```text
 bin/ffmpeg       diagnostic executable used by build/tests
@@ -1866,7 +1878,7 @@ bin/libsoundsolution.so.2
 bin/ss18.dat
 ```
 
-Both files must exist and be readable. Use `DEBUG_MODE="ON"` and inspect native stderr/log output for the exact station-scoped DSP error.
+Both files must exist and be readable. If ON AIR fails because the station database points to a missing `ss18.dat`, the Studio error modal can search the current installation for the verified bundled file and offer `Use found path and retry`. If no valid candidate is found, enable `DEBUG_MODE="ON"` and inspect the exact station-scoped DSP error before changing files manually.
 
 ### Icecast output does not connect
 
@@ -1919,11 +1931,11 @@ Never commit or publish:
 
 ### Passwords
 
-v6042 requires 12-256 characters for newly created or changed application passwords. For an Internet-facing instance, use a long, unique password that is not reused by another service.
+v6072 requires 12-256 characters for newly created or changed application passwords. For an Internet-facing instance, use a long, unique password that is not reused by another service.
 
 ### Multi-factor authentication
 
-v6042 does not provide built-in MFA/2FA. If this is a requirement for a deployment, place additional access control in front of the application or implement MFA in a future application release rather than assuming password authentication provides MFA-equivalent protection.
+v6072 does not provide built-in MFA/2FA. If this is a requirement for a deployment, place additional access control in front of the application or implement MFA in a future application release rather than assuming password authentication provides MFA-equivalent protection.
 
 ### Filesystem access
 
@@ -1938,7 +1950,7 @@ nginx configuration and Let's Encrypt/Certbot certificate state live outside the
 ## Known boundaries
 
 - Linux only.
-- Official AMD64 build host is Debian 12.
+- Official AMD64 release compilation uses the bundled Debian 12 Podman userspace baseline; Debian 12 and Debian 13 x86-64 hosts are supported when Podman is available.
 - Official ARM64 build host is Raspberry Pi 5 only.
 - No cross-compilation workflow.
 - No generic ARM64 package.
@@ -1947,17 +1959,17 @@ nginx configuration and Let's Encrypt/Certbot certificate state live outside the
 - No live FFmpeg command-line subprocess in the runtime audio path.
 - No SoundSolution subprocess.
 - No Wine/AppImage/FUSE dependency.
-- No built-in MFA/2FA in v6042.
+- No built-in MFA/2FA in v6072.
 - Trusted-LAN mode uses plain HTTP and must not be exposed to an untrusted network.
 - The source Git checkout alone is not the complete official native build environment; use the version-matched Release buildkit.
-- Node.js-backed JavaScript regression execution is optional.
+- Node.js-backed JavaScript regression execution is included in the AMD64 builder image and remains optional on native Raspberry Pi 5 builds.
 - Public redistribution of bundled binary dependencies requires a separate license/compliance review.
 
 ---
 
 ## Dependency manifest
 
-The v6042 buildkit contains the following fixed native component packages.
+The v6072 buildkit contains the following fixed native component packages.
 
 ### FFmpeg 7.1.5
 
@@ -1991,14 +2003,17 @@ build_soundsolution_for_web_broadcaster.sh
 SHA256: 2d7fac4027593ad5db9eef845bafcfcb16a8151455731a3398bf5e4ab220fbb6
 ```
 
-### v6042 source and build script
+### v6072 source, build script and AMD64 container baseline
 
 | File | SHA-256 |
 |---|---|
-| `Web_Broadcaster_v6042.zip` | `5811aaf71e9f2a06a23bbed86a2821741454df4ad098be9e090b110b9abb5171` |
-| `build_v6042_linux.sh` | `0dd2759c6e0d825314928a599114169f59ed0bfb066912fc16c4204092a69441` |
+| `Web_Broadcaster_v6072.zip` | `239bd456a91ce744137efbb3878a3c490aeea562779fa50eb28ecb0b3cb5f439` |
+| `build_v6072_linux.sh` | `cd96038eb3948ee909c5d8a415a4107421398e005ca1bd2e53cd93e7664eac30` |
+| `Containerfile.debian12` | `a38fa2617ce5dc37f48dab364094c651afdb380609456102aced268cefa0c2ea` |
+| `.containerignore` | `7cc3dd6eb819949833ea31dc1f3d3972f049a71bdaa519e229acc585476d6844` |
+| `Web_Broadcaster_v6072_buildkit.zip` | `55ecbaff2c6189345feac6bade9b4a052cf95bec2cbbc5ff3bf131fd31c24b44` |
 
-The buildkit's own `SHA256SUMS.txt` remains the authoritative complete internal manifest.
+The buildkit's own `SHA256SUMS.txt` remains the authoritative complete internal top-level manifest. The build script also validates architecture-specific FFmpeg/SoundSolution identities during staging.
 
 ---
 
@@ -2025,7 +2040,7 @@ The file is intentionally retained in full and is part of the regression contrac
 For the current release summary, see the final entry:
 
 ```text
-v6042 - 2026-08-16
+v6072 - 2026-09-14
 ```
 
-The v6042 entry documents the generalized malformed-ID3 metadata console-noise filter and the real FFmpeg 7.1.5 regression coverage added after long-running v6041 testing exposed additional malformed `COMM`, `TENC`, `TCOP` and `TOPE` metadata diagnostics.
+The v6072 entry records the final tuning of the script-only interrupt transition: the inserted script track now enters at the 25% outgoing-gain point, immediately at 100% gain with zero fade-in, while the established fade duration, queue/prebuffer protections, Manual Next behavior, normal crossfade and Now Playing/Icecast handoff rules remain unchanged.
