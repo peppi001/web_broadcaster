@@ -47,6 +47,7 @@ class PlayerHandoffService:
         reserved_queue_lines: Optional[Sequence[str]] = None,
         reservation_id: str = "",
         script_interrupt: bool = False,
+        scheduler_stream_interrupt: bool = False,
     ) -> Optional[dict[str, Any]]:
         station = str(station_key or self._deps.get_active_station_key() or "")
 
@@ -147,15 +148,16 @@ class PlayerHandoffService:
                 return generation
 
             generation = int(self._deps.mutate_player_state(reserve_plan) or 0)
-            script_fade = 0.0
-            if script_interrupt:
+            delayed_full_gain_interrupt = bool(script_interrupt or scheduler_stream_interrupt)
+            interrupt_fade = 0.0
+            if delayed_full_gain_interrupt:
                 try:
-                    script_fade = max(
+                    interrupt_fade = max(
                         0.05,
                         float(self._deps.script_interrupt_fade_seconds(station) or 0.0),
                     )
                 except Exception:
-                    script_fade = 5.0
+                    interrupt_fade = 5.0
                 try:
                     position_ms = int(
                         native_state.get("native_audio_probe_position_ms")
@@ -169,7 +171,7 @@ class PlayerHandoffService:
                     )
                     remaining_ms = effective_end_ms - position_ms
                     if effective_end_ms > 0 and remaining_ms > 0:
-                        script_fade = min(script_fade, max(0.05, remaining_ms / 1000.0))
+                        interrupt_fade = min(interrupt_fade, max(0.05, remaining_ms / 1000.0))
                 except Exception:
                     pass
 
@@ -179,15 +181,20 @@ class PlayerHandoffService:
                 target=target_player,
                 current_index=current_index,
                 target_index=target_index,
-                fade=script_fade if script_interrupt else 0.0,
+                fade=interrupt_fade if delayed_full_gain_interrupt else 0.0,
                 generation=generation,
                 reason=(
                     "script_interrupt_db_head_direct_handoff"
                     if script_interrupt
-                    else "manual_next_db_head_direct_handoff"
+                    else (
+                        "scheduler_stream_interrupt_db_head_direct_handoff"
+                        if scheduler_stream_interrupt
+                        else "manual_next_db_head_direct_handoff"
+                    )
                 ),
-                manual_next_fast=not script_interrupt,
+                manual_next_fast=not delayed_full_gain_interrupt,
                 script_interrupt=bool(script_interrupt),
+                scheduler_stream_interrupt=bool(scheduler_stream_interrupt),
                 manual_next_request_id=str(reservation_id or ""),
             )
             if direct_ok:
@@ -197,7 +204,11 @@ class PlayerHandoffService:
                     "mode": (
                         "script_interrupt_db_head_direct_handoff"
                         if script_interrupt
-                        else "manual_next_db_head_direct_handoff"
+                        else (
+                            "scheduler_stream_interrupt_db_head_direct_handoff"
+                            if scheduler_stream_interrupt
+                            else "manual_next_db_head_direct_handoff"
+                        )
                     ),
                     "player": active,
                     "target_player": target_player,
@@ -578,6 +589,8 @@ class ManualNextOrchestrator:
                 }
                 if source == "script":
                     handoff_kwargs["script_interrupt"] = True
+                elif source == "scheduler_stream":
+                    handoff_kwargs["scheduler_stream_interrupt"] = True
                 direct = self._deps.perform_direct_handoff(station, **handoff_kwargs)
                 if not direct or not bool(direct.get("success")):
                     error = str((direct or {}).get("error") or "manual_next_handoff_failed")

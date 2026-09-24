@@ -22,7 +22,8 @@
 
   const urlInput = qs('#scheduler-url-input');
   const urlDurationInput = qs('#scheduler-url-duration');
-  const urlInfiniteCb = qs('#scheduler-url-infinite');
+  const urlCustomInput = qs('#scheduler-url-custom-metadata');
+  const urlCustomRow = qs('#scheduler-url-custom-row');
   const urlCancelBtn = qs('#scheduler-url-cancel');
   const urlCloseBtn = qs('#scheduler-url-close');
   const urlOkBtn = qs('#scheduler-url-ok');
@@ -40,6 +41,7 @@
   const fileResizeHandle = fileModal ? fileModal.querySelector('.panel-resize-handle') : null;
 
   let editingRuleId = null;
+  let schedulerUrlCustomMetadata = '';
   let urlModalExternalResolver = null;
   let urlModalExternalRejecter = null;
   let urlModalExternalMode = null;
@@ -511,6 +513,7 @@
 
     // Always start with an empty action list for new rules (form.reset() may not clear hidden fields reliably).
     setActionLines([]);
+    schedulerUrlCustomMetadata = '';
 
     wireRecurringListener();
     updateRecurringUI();
@@ -556,6 +559,7 @@
       else lines.push('FILE:' + insertValue);
     }
     setActionLines(lines);
+    schedulerUrlCustomMetadata = insertKind === 'stream' ? String(ruleData.custom_metadata || '') : '';
 
     const recurring = qs('#recurring_event', form);
     const dateEl = qs('#run_date', form);
@@ -566,7 +570,7 @@
     if (recurring) recurring.checked = parsed.isRecurring;
     updateRecurringUI();
 
-    if (timeEl) timeEl.value = parsed.time || '';
+    if (timeEl) timeEl.value = normalizeSchedulerTime(parsed.time) || '';
     if (parsed.isRecurring) {
       if (dayEl && parsed.weekday) dayEl.value = parsed.weekday;
     } else {
@@ -583,28 +587,37 @@
       run_when: card.getAttribute('data-rule-run-when') || '',
       insert_kind: card.getAttribute('data-rule-insert-kind') || 'file',
       insert_value: card.getAttribute('data-rule-insert-value') || '',
+      custom_metadata: card.getAttribute('data-rule-custom-metadata') || '',
       priority: card.getAttribute('data-rule-priority') || 'next',
       is_enabled: (card.getAttribute('data-rule-enabled') || '0') === '1' ? 1 : 0,
       auto_start: (card.getAttribute('data-rule-auto-start') || '0') === '1' ? 1 : 0
     });
   }
 
+  function normalizeSchedulerTime(value) {
+    const match = String(value || '').trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+    if (!match) return '';
+    const hh = Number(match[1]), mm = Number(match[2]), ss = Number(match[3] || 0);
+    if (hh > 23 || mm > 59 || ss > 59) return '';
+    return `${String(hh).padStart(2, '0')}:${match[2]}:${String(ss).padStart(2, '0')}`;
+  }
+
   function parseRunWhen(runWhen) {
     const s = (runWhen || '').trim();
-    // Date case: YYYY-MM-DD HH:MM
-    const mDate = s.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})$/);
+    // Date case: YYYY-MM-DD HH:MM[:SS]
+    const mDate = s.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}(?::\d{2})?)$/);
     if (mDate) {
       return { isRecurring: false, date: mDate[1], time: mDate[2] };
     }
 
-    // Everyday case: Everyday HH:MM
-    const mEvery = s.match(/^Everyday\s+(\d{2}:\d{2})$/i);
+    // Everyday case: Everyday HH:MM[:SS]
+    const mEvery = s.match(/^Everyday\s+(\d{2}:\d{2}(?::\d{2})?)$/i);
     if (mEvery) {
       return { isRecurring: true, weekday: 'Everyday', time: mEvery[1] };
     }
 
-    // Weekday case: Monday HH:MM
-    const mDay = s.match(/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+(\d{2}:\d{2})$/i);
+    // Weekday case: Monday HH:MM[:SS]
+    const mDay = s.match(/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+(\d{2}:\d{2}(?::\d{2})?)$/i);
     if (mDay) {
       const day = (mDay[1] || '').toLowerCase();
       const dayNorm = day.charAt(0).toUpperCase() + day.slice(1);
@@ -613,7 +626,7 @@
 
     // Fallback: best-effort split
     const parts = s.split(/\s+/);
-    if (parts.length >= 2 && /\d{2}:\d{2}/.test(parts[1])) {
+    if (parts.length >= 2 && /^\d{2}:\d{2}(?::\d{2})?$/.test(parts[1])) {
       const p0 = parts[0];
       if (/^\d{4}-\d{2}-\d{2}$/.test(p0)) return { isRecurring: false, date: p0, time: parts[1] };
       const d = p0.toLowerCase();
@@ -659,7 +672,8 @@
       insert_value: (fd.get('insert_value') || '').toString().trim(),
       priority: (fd.get('priority') || '').toString(),
       is_enabled: fd.get('is_enabled') ? 1 : 0,
-      auto_start: fd.get('auto_start') ? 1 : 0
+      auto_start: fd.get('auto_start') ? 1 : 0,
+      custom_metadata: schedulerUrlCustomMetadata
     };
 
     if (!payload.name || !payload.run_when || !payload.insert_kind || !payload.insert_value || !payload.priority) {
@@ -697,7 +711,8 @@
       insert_value: (fd.get('insert_value') || '').toString().trim(),
       priority: (fd.get('priority') || '').toString(),
       is_enabled: fd.get('is_enabled') ? 1 : 0,
-      auto_start: fd.get('auto_start') ? 1 : 0
+      auto_start: fd.get('auto_start') ? 1 : 0,
+      custom_metadata: schedulerUrlCustomMetadata
     };
 
     if (!payload.name || !payload.run_when || !payload.insert_kind || !payload.insert_value || !payload.priority) {
@@ -735,7 +750,7 @@
     const dayEl = qs('#run_weekday', form);
     const timeEl = qs('#run_time', form);
 
-    const t = timeEl ? (timeEl.value || '').trim() : '';
+    const t = normalizeSchedulerTime(timeEl ? timeEl.value : '');
     const isRec = recurring ? !!recurring.checked : false;
 
     if (!t) return '';
@@ -772,6 +787,8 @@
     if (!form) return;
     const action = qs('#action_script', form);
     const normalized = normalizeSingleActionLine(lines);
+    const previous = getActionLines()[0] || '';
+    if (!normalized.length || normalized[0] !== previous) schedulerUrlCustomMetadata = '';
     if (action) action.value = (normalized || []).join('\n');
     renderActionItems();
   }
@@ -1001,9 +1018,13 @@
     urlModalPreviousTitle = titleEl ? (titleEl.textContent || 'Add URL') : 'Add URL';
     if (titleEl) titleEl.textContent = opts.title || 'Add URL';
     urlModalExternalMode = opts.mode || null;
-    if (urlDurationInput) urlDurationInput.value = opts.defaultDuration != null ? String(opts.defaultDuration) : '60';
-    if (urlInfiniteCb) urlInfiniteCb.checked = !!opts.defaultInfinite;
+    if (urlDurationInput) {
+      urlDurationInput.value = opts.defaultInfinite ? '' : formatUrlDuration(opts.defaultDuration);
+      urlDurationInput.setCustomValidity('');
+    }
     if (urlInput) urlInput.value = opts.defaultUrl || '';
+    if (urlCustomInput) urlCustomInput.value = opts.defaultCustomMetadata || '';
+    if (urlCustomRow) urlCustomRow.hidden = !opts.allowCustomMetadata;
     bindFloatingModal(urlBackdrop, urlModal, urlTitlebar, urlResizeHandle);
     openFloatingModal(urlBackdrop, urlModal, urlInput);
   }
@@ -1184,8 +1205,34 @@
   }
 
   function showAddUrlPrompt() {
-    // Open a dedicated modal so the page layout does not shift.
-    openUrlModal({ title: 'Add URL', defaultDuration: 60, defaultInfinite: false });
+    // Editing an existing URL action keeps its duration and fixed title visible.
+    const current = getActionLines()[0] || '';
+    const previous = /^URL:(-?\d+):(https?:\/\/.+)$/i.exec(current);
+    openUrlModal({
+      title: 'Add URL',
+      allowCustomMetadata: true,
+      defaultUrl: previous ? previous[2] : '',
+      defaultDuration: previous ? Number(previous[1]) : null,
+      defaultCustomMetadata: previous ? schedulerUrlCustomMetadata : ''
+    });
+  }
+
+  function formatUrlDuration(seconds) {
+    const value = Number(seconds);
+    if (seconds == null || !Number.isSafeInteger(value) || value <= 0) return '';
+    const hh = Math.floor(value / 3600);
+    const mm = Math.floor((value % 3600) / 60);
+    const ss = value % 60;
+    return [hh, mm, ss].map(part => String(part).padStart(2, '0')).join(':');
+  }
+
+  function parseUrlDuration(value) {
+    const text = String(value || '').trim();
+    if (!text) return -1;
+    const match = /^(\d{2,}):([0-5]\d):([0-5]\d)$/.exec(text);
+    if (!match) return null;
+    const seconds = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
+    return Number.isSafeInteger(seconds) && seconds > 0 ? seconds : null;
   }
 
   function readUrlModalValues() {
@@ -1193,16 +1240,19 @@
     const url = (urlInput.value || '').trim();
     if (!url) return null;
 
-    let dur = 60;
-    const inf = !!(urlInfiniteCb && urlInfiniteCb.checked);
-    if (inf) {
-      dur = -1;
-    } else if (urlDurationInput) {
-      const v = (urlDurationInput.value || '').trim();
-      const n = parseInt(v, 10);
-      if (!isNaN(n) && n > 0) dur = n;
+    const dur = parseUrlDuration(urlDurationInput ? urlDurationInput.value : '');
+    if (dur === null) {
+      if (urlDurationInput) {
+        urlDurationInput.setCustomValidity('Enter a positive duration in HH:MM:SS, or leave empty for infinite playback.');
+        urlDurationInput.reportValidity();
+        urlDurationInput.focus();
+      }
+      return null;
     }
-    return { url, duration: dur, infinite: inf };
+    if (urlDurationInput) urlDurationInput.setCustomValidity('');
+    const customMetadata = urlCustomRow && !urlCustomRow.hidden && urlCustomInput
+      ? String(urlCustomInput.value || '').trim() : '';
+    return { url, duration: dur, custom_metadata: customMetadata };
   }
 
   function commitUrlFromModal() {
@@ -1220,6 +1270,7 @@
     const lines = getActionLines();
     lines.unshift('URL:' + String(values.duration) + ':' + values.url);
     setActionLines(lines);
+    schedulerUrlCustomMetadata = values.custom_metadata;
     closeUrlModal();
   }
 
@@ -1247,29 +1298,17 @@
       });
     }
     if (urlDurationInput) {
-      // numeric-only
       urlDurationInput.addEventListener('keydown', function(e){
-        const k = e.key;
-        if (k === 'Enter') {
+        if (e.key === 'Enter') {
           e.preventDefault();
           commitUrlFromModal();
-          return;
-        }
-        if (k === 'Escape') {
+        } else if (e.key === 'Escape') {
           e.preventDefault();
           closeUrlModal();
-          return;
-        }
-        // Allow navigation/edit keys
-        if (k === 'Backspace' || k === 'Delete' || k === 'ArrowLeft' || k === 'ArrowRight' || k === 'Home' || k === 'End' || k === 'Tab') return;
-        // Allow digits only
-        if (!/^[0-9]$/.test(k)) {
-          e.preventDefault();
         }
       });
       urlDurationInput.addEventListener('input', function(){
-        // strip any non-digits (e.g. paste)
-        urlDurationInput.value = (urlDurationInput.value || '').replace(/[^0-9]/g, '');
+        urlDurationInput.setCustomValidity('');
       });
     }
     if (urlInput) {
@@ -1309,20 +1348,21 @@
   // Next run countdown rendering
   // ---------------------------
   function parseLocalDateTime(s) {
-    // Expect "YYYY-MM-DD HH:MM" (same format as displayed in UI / stored in DB)
-    const m = (s || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$/);
+    // Accept YYYY-MM-DD HH:MM[:SS] from both new and existing stored rules.
+    const m = (s || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?$/);
     if (!m) return null;
     const y = Number(m[1]), mo = Number(m[2]) - 1, d = Number(m[3]);
-    const hh = Number(m[4]), mm = Number(m[5]);
-    const dt = new Date(y, mo, d, hh, mm, 0, 0);
-    return isNaN(dt.getTime()) ? null : dt;
+    const hh = Number(m[4]), mm = Number(m[5]), ss = Number(m[6] || 0);
+    if (hh > 23 || mm > 59 || ss > 59) return null;
+    const dt = new Date(y, mo, d, hh, mm, ss, 0);
+    if (dt.getFullYear() !== y || dt.getMonth() !== mo || dt.getDate() !== d) return null;
+    return dt;
   }
 
-  function nextDateFromWeekdayTime(weekdayName, hhmm) {
+  function nextDateFromWeekdayTime(weekdayName, clockTime) {
     const w = (weekdayName || '').trim().toLowerCase();
-    const mTime = (hhmm || '').trim().match(/^(\d{2}):(\d{2})$/);
-    if (!w || !mTime) return null;
-
+    const normalized = normalizeSchedulerTime(clockTime);
+    if (!w || !normalized) return null;
     const map = {
       sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
       thursday: 4, friday: 5, saturday: 6
@@ -1330,20 +1370,12 @@
     const targetDow = map[w];
     if (targetDow === undefined) return null;
 
-    const hh = Number(mTime[1]), mm = Number(mTime[2]);
+    const [hh, mm, ss] = normalized.split(':').map(Number);
     const now = new Date();
-    const base = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, 0, 0);
-
-    const todayDow = base.getDay();
-    let delta = targetDow - todayDow;
-    if (delta < 0) delta += 7;
-
-    let candidate = new Date(base.getTime() + delta * 24 * 60 * 60 * 1000);
-
-    // If it's today but already passed, push to next week.
-    if (delta === 0 && candidate.getTime() <= now.getTime()) {
-      candidate = new Date(candidate.getTime() + 7 * 24 * 60 * 60 * 1000);
-    }
+    const candidate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, ss, 0);
+    const delta = (targetDow - candidate.getDay() + 7) % 7;
+    candidate.setDate(candidate.getDate() + delta);
+    if (candidate.getTime() <= now.getTime()) candidate.setDate(candidate.getDate() + 7);
     return candidate;
   }
 
@@ -1351,32 +1383,25 @@
     const s = (runWhen || '').trim();
     if (!s) return null;
 
-    // Date case: YYYY-MM-DD HH:MM
+    // One-shot date: YYYY-MM-DD HH:MM[:SS].
     const dt = parseLocalDateTime(s);
-    if (dt) {
-      const now = new Date();
-      if (dt.getTime() <= now.getTime()) return null;
-      return dt;
-    }
+    if (dt) return dt.getTime() > Date.now() ? dt : null;
 
-    // Everyday case: Everyday HH:MM
-    const mEvery = s.match(/^Everyday\s+(\d{2}:\d{2})$/i);
+    // Daily rule: Everyday HH:MM[:SS].
+    const mEvery = s.match(/^Everyday\s+(\d{2}:\d{2}(?::\d{2})?)$/i);
     if (mEvery) {
+      const normalized = normalizeSchedulerTime(mEvery[1]);
+      if (!normalized) return null;
+      const [hh, mm, ss] = normalized.split(':').map(Number);
       const now = new Date();
-      const parts = mEvery[1].split(':');
-      const hh = parseInt(parts[0], 10);
-      const mm = parseInt(parts[1], 10);
-      const candidate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, 0, 0);
-      if (candidate.getTime() > now.getTime()) return candidate;
-      return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, hh, mm, 0, 0);
+      const candidate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, ss, 0);
+      if (candidate.getTime() <= now.getTime()) candidate.setDate(candidate.getDate() + 1);
+      return candidate;
     }
 
-    // Weekday case: Monday HH:MM
-    const mDay = s.match(/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+(\d{2}:\d{2})$/i);
-    if (mDay) {
-      return nextDateFromWeekdayTime(mDay[1], mDay[2]);
-    }
-
+    // Weekly rule: Monday HH:MM[:SS].
+    const mDay = s.match(/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+(\d{2}:\d{2}(?::\d{2})?)$/i);
+    if (mDay) return nextDateFromWeekdayTime(mDay[1], mDay[2]);
     return null;
   }
 

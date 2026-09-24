@@ -51,6 +51,10 @@ void wb_libav_decode_abort(WbLibavDecodeSession *session);
 void wb_libav_decode_destroy(WbLibavDecodeSession *session);
 bool wb_libav_decode_finished(WbLibavDecodeSession *session);
 uint64_t wb_libav_decode_invalid_data_skip_count(WbLibavDecodeSession *session);
+/* Returns the latest upstream ICY/Vorbis song title and its change revision. */
+uint64_t wb_libav_decode_source_metadata(
+    WbLibavDecodeSession *session, char *metadata, size_t size
+);
 void wb_libav_decode_error(
     WbLibavDecodeSession *session,
     char *error,

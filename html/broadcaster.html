@@ -1018,7 +1018,7 @@
 
 {% endblock %}
 {% block extra_body %}
-<script src="{{ url_for('static', filename='scheduler.js') }}" defer></script>
+<script src="{{ url_for('static', filename='scheduler.js', v=app_version) }}" defer></script>
 
 <style>
   input#run_date.scheduler-dark-field { background: inherit !important; padding-right: 12px !important; -webkit-appearance: none; -moz-appearance: textfield; appearance: none; }
@@ -1035,6 +1035,7 @@
   .scheduler-form-grid-v540 { display: grid; grid-template-columns: 1fr 1fr; column-gap: 26px; row-gap: 12px; align-items: start; }
   .scheduler-form-grid-v540 .sb-field { display: block; }
   .sb-time-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+  .sb-time-row input#run_time { min-width: 130px; }
   .sb-recurring { display:inline-flex; align-items:center; gap:8px; margin:0; font-weight:600; white-space:nowrap; justify-content:flex-start; }
   .sb-recurring input[type="checkbox"] { width:auto; margin-top:0; padding:0; flex:0 0 auto; }
   .sb-autostart { margin-top: 10px; width: auto; }
@@ -1181,7 +1182,7 @@
                 <option value="Saturday">Saturday</option>
                 <option value="Sunday">Sunday</option>
               </select>
-              <input type="time" name="run_time" id="run_time" class="scheduler-dark-field">
+              <input type="time" name="run_time" id="run_time" step="1" class="scheduler-dark-field">
             </div>
           </label>
           <div class="sb-action-block">
@@ -1307,7 +1308,7 @@
   }
   #scheduler-url-modal {
     width:560px !important;
-    height:260px !important;
+    height:320px !important;
   }
   #scheduler-url-modal .modal-body {
     padding:14px 14px 10px;
@@ -1334,6 +1335,8 @@
     gap:12px;
     flex-wrap:wrap;
   }
+  #scheduler-url-custom-row[hidden] { display:none !important; }
+  #scheduler-url-custom-metadata { width:100%; }
   #scheduler-url-modal .scheduler-dark-field {
     height:34px;
     padding:0 10px;
@@ -1356,20 +1359,6 @@
   }
   #scheduler-url-duration {
     width:120px;
-  }
-  .scheduler-url-infinite {
-    display:inline-flex;
-    align-items:center;
-    gap:8px;
-    margin:0;
-    color:#cbd5e1;
-    font-size:12px;
-    line-height:1.2;
-  }
-  .scheduler-url-infinite input {
-    width:auto;
-    margin:0;
-    accent-color:#0ea5e9;
   }
   .scheduler-url-help {
     font-size:11px;
@@ -1404,7 +1393,7 @@
 </style>
 
 <div id="scheduler-url-modal-backdrop" class="modal-backdrop" aria-hidden="true" style="display:none;">
-  <div class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered modal--scheduler-floating" id="scheduler-url-modal" role="dialog" aria-modal="true" aria-labelledby="scheduler-url-modal-title" data-min-width="520" data-min-height="250" style="width:520px;height:250px;">
+  <div class="studio-panel studio-floating-window studio-floating-window--compact studio-floating-window--centered modal--scheduler-floating" id="scheduler-url-modal" role="dialog" aria-modal="true" aria-labelledby="scheduler-url-modal-title" data-min-width="520" data-min-height="370" style="width:520px;height:390px;">
     <div class="panel-titlebar studio-floating-window__titlebar modal-titlebar" id="scheduler-url-modal-titlebar">
       <span id="scheduler-url-modal-title">Add URL</span>
       <button type="button" id="scheduler-url-close" class="studio-window-close" aria-label="Close">×</button>
@@ -1417,14 +1406,16 @@
         </label>
         <div class="scheduler-url-row">
           <label class="scheduler-url-field" for="scheduler-url-duration">
-            Duration (seconds)
-            <input type="text" id="scheduler-url-duration" class="scheduler-dark-field" inputmode="numeric" pattern="[0-9]*" placeholder="60" />
-          </label>
-          <label class="scheduler-url-infinite">
-            <input type="checkbox" id="scheduler-url-infinite" />
-            Infinite
+            Duration (HH:MM:SS)
+            <input type="text" id="scheduler-url-duration" class="scheduler-dark-field" inputmode="text" placeholder="HH:MM:SS" autocomplete="off" spellcheck="false" />
+            <span class="scheduler-url-help">Leave empty for infinite playback.</span>
           </label>
         </div>
+        <label class="scheduler-url-field" id="scheduler-url-custom-row" for="scheduler-url-custom-metadata" hidden>
+          Custom metadata (optional)
+          <input type="text" id="scheduler-url-custom-metadata" class="scheduler-dark-field" maxlength="240" placeholder="e.g. Radio - Live Show" autocomplete="off" />
+          <span class="scheduler-url-help">Leave empty to use metadata from the source stream.</span>
+        </label>
         <div class="scheduler-url-help">Press Enter to add, Esc to cancel.</div>
       </div>
     </div>

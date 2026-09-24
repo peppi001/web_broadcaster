@@ -5384,3 +5384,113 @@ v6072 - 2026-09-14
 - Changed only the script-interrupt entry threshold from 30% to 25% outgoing gain. With the existing smoothstep fade curve, the script track now starts at about 67.365% of the configured fade-out duration.
 - The script track still starts immediately at 100% gain with zero fade-in; fade duration, queue/prebuffer guards, Manual Next, normal crossfade, Now Playing and Icecast handoff behavior are otherwise unchanged.
 - Updated APP_VERSION and native daemon version to 6072.
+
+v6073 - 2026-09-18
+-------------------
+- Fixed Scheduler `Immediate` playback for HTTP/HTTPS stream queue items that could be inserted at the queue head but fail to start immediately while the native deck was still connecting or prebuffering the same URL.
+- Manual hard-handoff preparation now reuses an exact matching live native stream candidate instead of destroying it and restarting the HTTP load, and waits up to 15 seconds for that already-owned candidate to become prebuffer-ready.
+- Local-file Manual Next behavior, hard-handoff ownership, seek guards, script interrupt behavior and normal automatic crossfade remain unchanged.
+- Updated APP_VERSION and native daemon version to 6073.
+
+v6074 - 2026-09-18
+-------------------
+- Added a Scheduler-only fade interrupt for `Immediate` HTTP/HTTPS stream items. Local-file Scheduler Immediate, operator Manual Next, normal automatic crossfade and script interrupt routing remain unchanged.
+- The scheduler URL target is fully prepared before any outgoing fade starts. An exact matching native URL candidate already in `loading`/`prebuffering` state is reused and may wait up to the existing 15-second stream startup window instead of being reloaded.
+- Once the stream target is ready, the outgoing track fades from its exact current position using the station's existing fade-out duration. The stream enters instantly at 100% gain with zero fade-in when the outgoing smoothstep gain reaches 25%, reusing the proven delayed full-gain native transition primitive.
+- `track_started`, Now Playing and Icecast metadata switch at the actual stream entry point rather than when the outgoing fade begins. If the target cannot become ready, the fade is not started and the currently audible track remains on air.
+- Added v6074 regression coverage for URL-only scheduler routing, preservation of local Scheduler Immediate and Manual Next behavior, dedicated scheduler-stream handoff flags, live preload reuse, 15-second readiness waiting and preservation of the v6070 Manual Next/seek/script isolation guards.
+- Corrected the release packaging metadata inherited from the provisional v6073 buildkit: v6074 uses a version-matched build script/README/source archive and a self-consistent SHA-256 manifest.
+- Updated APP_VERSION and native daemon version to 6074.
+
+v6075 - 2026-09-18
+-------------------
+- Extended the v6074 Scheduler Immediate delayed full-gain fade handoff from HTTP/HTTPS streams to all Scheduler Immediate media targets, including a single local file and the first file of an Immediate directory insertion.
+- Scheduler Immediate now prepares the queue-head target before starting the outgoing fade, then starts the target instantly at 100% gain with zero fade-in when the outgoing smoothstep gain reaches 25%, matching the established script/stream interrupt timing.
+- Immediate directory insertion still enqueues the complete directory in deterministic order; only the first queue-head file receives the interrupt fade, while subsequent files continue through the normal queue/crossfade path.
+- Preserved operator Manual Next, normal automatic crossfade, script interrupt routing, Scheduler Next/End behavior and the v6074 URL live-preload reuse/15-second startup protection.
+- Added v6075 regression coverage for local-file Scheduler Immediate routing, multi-file/directory queue-head behavior, URL preservation and isolation from Manual Next/script paths.
+- Updated APP_VERSION and native daemon version to 6075.
+
+
+v6076 - 2026-09-18
+-------------------
+- Fixed a flaky native audio-probe regression test that could observe a different generic probe candidate immediately after the authoritative native_audio_probe_eof event on a loaded build host.
+- The one-deck cue-window regression now validates terminal queue/deck identity, cue bounds, decoded samples, final played duration and source position from the exact terminal EOF event, matching the atomic-event strategy already used by the decoder-tail regression since v6032.
+- No runtime playback, Scheduler Immediate fade, Manual Next, script interrupt, normal crossfade, DSP, encoder, Icecast, queue, database or UI behavior changed from v6075.
+- Updated APP_VERSION and native daemon version to 6076.
+
+
+v6077 - 2026-09-18
+-------------------
+- Fixed a cross-station protected-playback leak in scheduled-script guard checks. `_native_status_line_for_state()` now pins the requested station runtime context before reading the station-scoped A/B player snapshot.
+- A Scheduler-origin or URL source playing on one station can no longer make another station appear to have protected playback and incorrectly skip its exact-time script occurrence.
+- The protection remains intentionally station-local: the station actually playing Scheduler-origin or URL content still blocks its own scheduled script interrupt exactly as before.
+- Added v6077 regression coverage that reproduces the v6076 leak with Station A on a Scheduler URL and Station B on normal local playback, and verifies both Scheduler and URL guards remain isolated per station.
+- Scheduler Immediate fade behavior, Manual Next, script interrupt timing, normal crossfade, DSP, encoder, Icecast, queue and database behavior remain unchanged.
+- Updated APP_VERSION and native daemon version to 6077.
+
+v6078 - 2026-09-19
+-------------------
+- Fixed a native A/B hard-handoff deadlock in which a very short next ID could reach decoder EOF before its audible boundary while the outgoing track still had a longer PCM FIFO drain. The target's primed PCM and decoder playback clock now remain frozen until the exact handoff identity reaches the mixer's audible switch.
+- Retimed the primed target to the actual output switch before publishing the new active-deck identity, avoiding arm-time clock drift and the small finalizer race.
+- An unusable target that terminates or is stopped before the handoff now releases its exact reserved destination so native need-next handling can load another candidate instead of indefinitely returning hard_handoff_target_reserved.
+- Added a native A -> 1.1-second ID -> next-track integration regression and dedicated v6078 tests for playback-clock gating, exact-target identity, boundary retiming and terminal/stop reservation cleanup.
+- Scheduler Immediate fade, station-local script protection, Manual Next routing, normal crossfades, URL decoding, DSP and Icecast output configuration are unchanged.
+- Updated APP_VERSION and native daemon version to 6078.
+
+
+v6079 - 2026-09-19
+-------------------
+- Scheduler date, Everyday, and weekday rules now accept HH:MM:SS with one-second resolution, including creation, editing, next-run calculation, queue dispatch, and the browser countdown. The time editor exposes seconds via step=1 and the scheduler JavaScript URL carries the app version to invalidate old browser caches.
+- Existing HH:MM scheduler rules remain supported and are interpreted as HH:MM:00; no database schema migration or rule recreation is required.
+- Added v6079 Python and Node.js regression coverage for second-precision schedule timing and legacy rule compatibility.
+- Scheduler continues to poll every second; actual audible entry can be later due to dispatch, startup/prebuffer, and configured fade. Native audio, v6078 short-ID recovery, v6077 station protection, and Scheduler Immediate fade behavior remain unchanged.
+- Updated APP_VERSION and native daemon version to 6079.
+
+
+v6080 - 2026-09-19
+-------------------
+- URL-source song metadata is read directly from the existing native FFmpeg decode connection: dynamic Icecast ICY StreamTitle for MP3/AAC streams and container/audio-stream TITLE/ARTIST fields for Ogg/Vorbis, including 48 kHz sources.
+- Metadata updates reach the existing asynchronous Icecast metadata sender, without reconnecting the input stream or restarting playback/encoding. The source metadata is applied only after the matching URL is the actual active output deck with the same queue ID and slot token; preloaded, stopped, or replaced streams cannot overwrite the audible output's metadata.
+- Inputs with no actual song title retain the previous Streaming fallback; only URL-source metadata forwarding changes. Local-file metadata, Scheduler Immediate fade, script/Manual Next transitions, DSP, and native audio routing remain unchanged.
+- Added a native integration regression for 48 kHz Ogg/Vorbis TITLE/ARTIST and a dynamic ICY StreamTitle change over the original audio HTTP connection.
+- Updated APP_VERSION and native daemon version to 6080.
+
+
+v6081 - 2026-09-19
+-------------------
+- The Studio and multi-station Dashboard Now Playing displays now show the source song metadata that v6080 already forwards to Icecast during HTTP/HTTPS URL playback. Both views read the current station's native Icecast metadata from the existing get_state snapshot; no additional network connection or audio command is used.
+- The displayed source title is accepted only for an active URL with matching queue ID and slot token and an enabled output. Preloaded/previous streams or another station cannot replace the current UI title. Live source title changes appear on normal UI refresh without resetting the current track or its progress.
+- Existing Streaming fallback remains for sources without metadata; local-file UI and all native audio, scheduler, script, transition, DSP and Icecast output behavior remain unchanged.
+- Added regression coverage for Studio and Dashboard source metadata updates, stream identity isolation, missing metadata fallback and local-file compatibility.
+- Updated APP_VERSION and native daemon version to 6081.
+
+v6082 - 2026-09-19
+-------------------
+- Added optional queue-item-specific Custom metadata to Add URL to Queue. Blank preserves incoming ICY StreamTitle or Ogg/Vorbis TITLE/ARTIST changes; a nonblank value is fixed for only that enqueued URL occurrence and is displayed in both Icecast and the Studio/Dashboard Now Playing views.
+- Each station stores custom URL text in a separate queue-item companion table with automatic cleanup when the queue item is deleted. A shared URL/track can be queued multiple times with different fixed titles; legacy station databases are preserved without altering existing tables. URL sources added through other workflows retain automatic metadata by default.
+- The native deck carries an explicit custom-metadata flag through the exact planned/confirmed identity and ignores later upstream title changes only for the matching fixed-title URL. Prepared, replaced or other-station URLs cannot overwrite current output metadata. Local files, URL decoding, streaming playback, Scheduler/script/Manual Next fades and ordinary dynamic upstream metadata are unchanged.
+- Added dedicated regression coverage for per-station and per-queue persistence, automatic cleanup, descriptor and UI precedence, and native 48-kHz Ogg/Vorbis title override while the upstream source advertises a different title.
+- Updated APP_VERSION and native daemon version to 6082.
+
+
+v6083 - 2026-09-20
+-------------------
+- URL insertion modal Duration now accepts optional HH:MM:SS; blank means infinite playback without a separate Infinite checkbox. The default is blank and a filled duration is validated as a positive time with minutes/seconds from 00 to 59 before the URL is committed.
+- The modal converts HH:MM:SS to the existing integer-second duration sent to the queue API or stored in Scheduler URL action lines; blank uses the existing -1 infinite sentinel. Existing URL paths, saved Scheduler rules, station databases, native audio and metadata handling remain unchanged.
+- Added browser-executed duration parser/modal regression tests and backend compatibility assertions.
+- Updated APP_VERSION, native daemon version, buildscript and release documentation to 6083.
+
+
+v6084 - 2026-09-20
+-------------------
+- Serialized AutoDJ queue-count, rotation selection, and enqueue as one per-station refill transaction. A simultaneous manual Next track_started refill and the AutoDJ background worker can no longer independently add the same missing song and permanently push Keep number of songs in the queue above its configured target.
+- Pinned the requested station context throughout each refill and used independent per-station locks. Manual queue insertions remain counted normally and are never automatically removed. NEXT and native audio transition behavior is unchanged.
+- Added deterministic concurrent-refill and repeated manual-Next queue-length regressions, including cross-station lock independence.
+- Updated APP_VERSION, native daemon version, buildscript, release documentation, and source regression suite to 6084.
+
+v6085 - 2026-09-20
+-------------------
+- Scheduler Add URL now exposes the same optional Custom metadata field as Queue Add URL. A nonempty rule-specific title is stored per station and applied to the newly created URL queue item on each scheduled run, including End, Next and Immediate priorities. Empty titles retain dynamic upstream metadata.
+- Scheduler rule creation, editing, and API listing retain the title, while changing an action to a file or directory clears it. Existing rules are compatible without altering scheduler_rules, and the rule companion metadata is cleaned up on deletion.
+- Added Scheduler custom URL metadata regression tests. Updated APP_VERSION, native daemon, builder and release documents to 6085.

@@ -1706,7 +1706,9 @@ static void format_track_metadata(
         strip_path_extension(base_metadata);
     }
     sanitize_metadata_text(base_metadata);
-    if (add_year_to_metadata && year[0] != '\0' && base_metadata[0] != '\0') {
+    if (track->stream_source && track->custom_metadata) {
+        copy_text(metadata, metadata_size, title);
+    } else if (add_year_to_metadata && year[0] != '\0' && base_metadata[0] != '\0') {
         (void)snprintf(metadata, metadata_size, "%s (%s)", base_metadata, year);
     } else {
         copy_text(metadata, metadata_size, base_metadata);
@@ -2631,6 +2633,13 @@ static void finalize_hard_handoff(
     int64_t timing_error_ms;
     if (state == NULL || handoff == NULL || !handoff->occurred) return;
 
+    /* Keep the target frozen until its playback clock has been aligned to
+     * the actual audible switch, including the gap between the mixer tick
+     * and this finalizer. */
+    (void)wb_audio_probe_retime_activation(
+        state, handoff->to_deck, &handoff->to_track,
+        handoff->actual_monotonic_ms
+    );
     (void)pthread_mutex_lock(&state->lock);
     state->active_deck = handoff->to_deck == 'B' ? 'B' : 'A';
     state->transitioning = false;
@@ -3178,6 +3187,67 @@ void wb_icecast_output_activate_track(WbEngineState *state, char deck, const WbD
     }
 }
 
+bool wb_icecast_output_update_source_metadata(
+    WbEngineState *state, char deck, const WbDeckState *track, const char *metadata
+) {
+    WbIcecastOutput *output = &state->icecast_output;
+    typedef struct {
+        bool valid;
+        char output_id[WB_NATIVE_OUTPUT_ID_SIZE];
+        char codec[WB_NATIVE_OUTPUT_CODEC_SIZE];
+    } MetadataRequest;
+    MetadataRequest requests[WB_NATIVE_OUTPUT_MAX] = {0};
+    char clean[WB_ICECAST_METADATA_SIZE];
+    size_t index;
+    int64_t now_ms;
+    bool owner_matches;
+    if (track == NULL || !track->stream_source || track->custom_metadata || track->slot_token[0] == '\0'
+        || metadata == NULL || metadata[0] == '\0') return false;
+    copy_text(clean, sizeof(clean), metadata);
+    sanitize_metadata_text(clean);
+    if (clean[0] == '\0') return false;
+    now_ms = monotonic_ms();
+    (void)pthread_mutex_lock(&output->lock);
+    owner_matches = output->engine_running && output->primary_deck == deck
+        && ((deck == 'A' && output->deck_a_started
+            && output->deck_a_queue_id == track->queue_id
+            && strcmp(output->deck_a_slot_token, track->slot_token) == 0)
+            || (deck == 'B' && output->deck_b_started
+            && output->deck_b_queue_id == track->queue_id
+            && strcmp(output->deck_b_slot_token, track->slot_token) == 0));
+    if (owner_matches) {
+        for (index = 0U; index < WB_NATIVE_OUTPUT_MAX; index += 1U) {
+            WbNativeStreamOutput *stream = &output->streams[index];
+            if (!stream->configured || !stream->enabled
+                || stream->current_metadata_queue_id != track->queue_id
+                || strcmp(stream->current_metadata_slot_token, track->slot_token) != 0
+                || strcmp(stream->current_metadata, clean) == 0) continue;
+            copy_text(stream->current_metadata, sizeof(stream->current_metadata), clean);
+            stream->metadata_generation += 1U;
+            stream->metadata_requested_count += 1U;
+            stream->metadata_pending = true;
+            stream->metadata_not_before_monotonic_ms = output->dsp_enabled
+                ? now_ms + WB_OUTPUT_DSP_METADATA_DELAY_MS : 0;
+            stream->metadata_error[0] = '\0';
+            requests[index].valid = true;
+            copy_text(requests[index].output_id, sizeof(requests[index].output_id), stream->output_id);
+            copy_text(requests[index].codec, sizeof(requests[index].codec), stream->codec);
+        }
+        mirror_default_stream_locked(output);
+        (void)pthread_cond_broadcast(&output->cond);
+    }
+    (void)pthread_mutex_unlock(&output->lock);
+    for (index = 0U; index < WB_NATIVE_OUTPUT_MAX; index += 1U) {
+        if (!requests[index].valid) continue;
+        emit_metadata_event(
+            state, "native_icecast_metadata_requested", true, false, false,
+            requests[index].output_id, requests[index].codec, clean,
+            track->queue_id, track->slot_token, "upstream_stream_metadata"
+        );
+    }
+    return owner_matches;
+}
+
 void wb_icecast_output_prepare_delayed_entry(WbEngineState *state, char deck) {
     WbIcecastOutput *output = &state->icecast_output;
     (void)pthread_mutex_lock(&output->lock);
@@ -3291,6 +3361,15 @@ void wb_icecast_output_stop_track(WbEngineState *state, char deck, int64_t queue
     (void)queue_id;
     (void)pthread_mutex_lock(&output->lock);
     active_token = deck == 'B' ? output->deck_b_slot_token : output->deck_a_slot_token;
+    if (
+        output->hard_handoff_pending && output->hard_handoff_to_deck == deck
+        && (slot_token == NULL || slot_token[0] == '\0'
+            || strcmp(output->hard_handoff_to_track.slot_token, slot_token) == 0)
+    ) {
+        /* Decoder errors and explicit target stops must also release the
+         * reservation, not just natural EOF. */
+        clear_hard_handoff_locked(output);
+    }
     if (slot_token == NULL || slot_token[0] == '\0' || strcmp(active_token, slot_token) == 0) {
         active_token[0] = '\0';
         if (deck == 'B') {
@@ -3485,6 +3564,25 @@ int wb_icecast_output_schedule_hard_handoff(
     return 0;
 }
 
+bool wb_icecast_output_is_pending_handoff_target(
+    WbEngineState *state, char deck, const WbDeckState *track
+) {
+    WbIcecastOutput *output;
+    bool pending;
+    if (state == NULL || track == NULL || track->slot_token[0] == '\0') return false;
+    output = &state->icecast_output;
+    (void)pthread_mutex_lock(&output->lock);
+    pending = output->hard_handoff_to_deck == deck
+        && output->hard_handoff_to_track.queue_id == track->queue_id
+        && strcmp(output->hard_handoff_to_track.slot_token, track->slot_token) == 0
+        && (
+            output->hard_handoff_pending
+            || (output->primary_deck == deck && state->active_deck != deck)
+        );
+    (void)pthread_mutex_unlock(&output->lock);
+    return pending;
+}
+
 bool wb_icecast_output_has_pending_hard_handoff(
     WbEngineState *state,
     char from_deck,
@@ -3535,6 +3633,18 @@ bool wb_icecast_output_handle_terminal_eof(
         matched = track->slot_token[0] != '\0'
             && strcmp(output->deck_a_slot_token, track->slot_token) == 0
             && output->deck_a_queue_id == track->queue_id;
+    }
+    if (
+        matched && output->hard_handoff_pending
+        && output->hard_handoff_to_deck == deck
+        && output->hard_handoff_to_track.queue_id == track->queue_id
+        && strcmp(output->hard_handoff_to_track.slot_token, track->slot_token) == 0
+        && output->primary_deck != deck
+    ) {
+        /* A target that terminated before the audible boundary can never
+         * satisfy the reservation. Release it so native_need_next_track can
+         * load another target instead of rejecting every subsequent load. */
+        clear_hard_handoff_locked(output);
     }
     if (matched) {
         outgoing_transition = output->transitioning && output->transition_from_deck == deck;

@@ -838,6 +838,7 @@ class NativeEngine(AudioEngine):
                 "manual_timing": bool(identity.get("manual_timing")),
                 "hard_clean": bool(identity.get("hard_clean")),
                 "short_no_crossfade": bool(identity.get("short_no_crossfade")),
+                "custom_metadata": bool(identity.get("custom_metadata")),
                 "stream_source": bool(identity.get("stream_source")),
                 "stream_infinite": bool(identity.get("stream_infinite")),
                 "stream_duration_ms": int(identity.get("stream_duration_ms") or 0),

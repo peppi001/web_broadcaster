@@ -753,6 +753,10 @@ static void run_decode(WbEngineState *state, WbAudioDeckProbe *probe, uint64_t g
     int decoder_exit_code = 0;
     int decoder_signal = 0;
     uint64_t corrupt_input_skip_count = 0U;
+    uint64_t source_metadata_seen_revision = 0U;
+    uint64_t source_metadata_sent_revision = 0U;
+    int64_t source_metadata_last_check_ms = 0;
+    char source_metadata[WB_ICECAST_METADATA_SIZE] = "";
 
     if (track.path[0] == '\0') {
         (void)pthread_mutex_lock(&state->lock);
@@ -1025,6 +1029,26 @@ static void run_decode(WbEngineState *state, WbAudioDeckProbe *probe, uint64_t g
             }
         }
 
+        if (track.stream_source && decode_session != NULL) {
+            uint64_t revision = wb_libav_decode_source_metadata(
+                decode_session, source_metadata, sizeof(source_metadata)
+            );
+            if (revision != 0U && revision != source_metadata_seen_revision) {
+                source_metadata_seen_revision = revision;
+            }
+            /* Preloaded/departed streams must never replace the audible title.
+             * Repeat the latest value after activation until the output's exact
+             * queue ID and slot token have been committed by track_started. */
+            if (activated && started_emitted && source_metadata_seen_revision != 0U
+                && (source_metadata_seen_revision != source_metadata_sent_revision
+                    || monotonic_ms() - source_metadata_last_check_ms >= 1500)) {
+                source_metadata_last_check_ms = monotonic_ms();
+                if (wb_icecast_output_update_source_metadata(
+                        state, probe->deck, &track, source_metadata
+                    )) source_metadata_sent_revision = source_metadata_seen_revision;
+            }
+        }
+
         mark_prebuffer_ready(state, probe, generation, pipe_eof);
 
         if (activated) {
@@ -1063,6 +1087,8 @@ static void run_decode(WbEngineState *state, WbAudioDeckProbe *probe, uint64_t g
                 break;
             }
             available_samples = probe->ring_fill / WB_AUDIO_FRAME_BYTES;
+            /* Retiming can happen after the outer decoder-loop snapshot. */
+            activation_ms = probe->activation_monotonic_ms;
             start_timeout_ms = seek_restart
                 ? state->audio_seek_start_timeout_ms
                 : state->audio_start_timeout_ms;
@@ -1141,6 +1167,15 @@ static void run_decode(WbEngineState *state, WbAudioDeckProbe *probe, uint64_t g
                 emit_buffer_underrun = true;
                 state->audio_buffer_underrun_count += 1U;
                 copy_text(probe->status, sizeof(probe->status), "underrun");
+            }
+            /* The 80 ms prime belongs to the audible handoff, not to the
+             * arm-time playback clock. An outgoing FIFO may outlast an entire
+             * short ID; never decode/play its continuation before the mixer
+             * has actually switched to this exact target identity. */
+            if (wb_icecast_output_is_pending_handoff_target(
+                    state, probe->deck, &probe->track
+                )) {
+                consume_samples = 0U;
             }
             if (consume_samples > available_samples) consume_samples = available_samples;
             if (consume_samples * WB_AUDIO_FRAME_BYTES > sizeof(playback_pcm)) {

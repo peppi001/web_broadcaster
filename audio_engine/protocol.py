@@ -609,6 +609,7 @@ def extract_annotated_identity(uri: str) -> dict[str, Any]:
         "manual_timing": as_bool("wb_manual_timing", default=False),
         "hard_clean": as_bool("wb_hard_clean_transition", "wb_clean_transition", default=False),
         "short_no_crossfade": as_bool("wb_short_no_crossfade", "wb_sam_short_no_crossfade", default=False),
+        "custom_metadata": as_bool("wb_custom_metadata", default=False),
         "stream_source": as_bool("wb_stream_source", default=False) or str(metadata.get("wb_source_type") or "").strip().lower() == "stream" or str(path or "").startswith(("http://", "https://")),
         "stream_infinite": as_bool("wb_stream_infinite", default=False),
         "stream_duration_ms": max(0, int(round(as_float("wb_stream_duration", "webradio_dur", default=0.0) * 1000.0))),

@@ -1383,6 +1383,7 @@ static int handle_load(WbEngineState *state, int fd, int64_t request_id, const c
     bool hard_clean = false;
     bool short_no_crossfade = false;
     bool stream_source = false;
+    bool custom_metadata = false;
     bool stream_infinite = false;
     int64_t stream_duration_ms = 0;
     bool clear_slot = false;
@@ -1426,6 +1427,7 @@ static int handle_load(WbEngineState *state, int fd, int64_t request_id, const c
     (void)wb_json_get_bool(track_json, "hard_clean", &hard_clean);
     (void)wb_json_get_bool(track_json, "short_no_crossfade", &short_no_crossfade);
     (void)wb_json_get_bool(track_json, "stream_source", &stream_source);
+    (void)wb_json_get_bool(track_json, "custom_metadata", &custom_metadata);
     (void)wb_json_get_bool(track_json, "stream_infinite", &stream_infinite);
     (void)wb_json_get_i64(track_json, "stream_duration_ms", &stream_duration_ms);
     (void)wb_json_get_i64(track_json, "analysis_window_ms", &analysis_window_ms);
@@ -1528,6 +1530,7 @@ static int handle_load(WbEngineState *state, int fd, int64_t request_id, const c
             planned->hard_clean = hard_clean;
             planned->short_no_crossfade = short_no_crossfade;
             planned->stream_source = stream_source;
+            planned->custom_metadata = stream_source && custom_metadata;
             planned->stream_infinite = stream_source && stream_infinite;
             planned->stream_duration_ms = stream_duration_ms > 0 ? stream_duration_ms : 0;
             if (planned->stream_source) {
@@ -2241,6 +2244,8 @@ static int handle_sync_event(WbEngineState *state, int fd, int64_t request_id, c
                 if (planned_match) copy_text(event_descriptor.title, sizeof(event_descriptor.title), planned->title);
                 else if (confirmed_match) copy_text(event_descriptor.title, sizeof(event_descriptor.title), confirmed->title);
             }
+            event_descriptor.custom_metadata = planned_match ? planned->custom_metadata
+                : confirmed_match ? confirmed->custom_metadata : false;
             *confirmed = event_descriptor;
         } else if (planned_match) {
             *confirmed = *planned;

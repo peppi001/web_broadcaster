@@ -82,6 +82,10 @@ class AutoDJService:
         self._deps = dependencies
         self._thread_lock = threading.RLock()
         self._threads: dict[str, threading.Thread] = {}
+        # Keep queue-count, rotation selection and enqueue atomic per station.
+        # Manual Next can wake the worker while track_started also refills.
+        self._fill_locks_guard = threading.Lock()
+        self._fill_locks: dict[str, threading.RLock] = {}
         self._notice_lock = threading.RLock()
         self._notices: dict[str, dict[str, Any]] = {}
         self._wake = threading.Event()
@@ -235,13 +239,28 @@ class AutoDJService:
             return track_id
         return None
 
+    def _fill_lock_for_station(self, station_key: str) -> threading.RLock:
+        with self._fill_locks_guard:
+            lock = self._fill_locks.get(station_key)
+            if lock is None:
+                lock = threading.RLock()
+                self._fill_locks[station_key] = lock
+            return lock
+
     def fill_queue_once(self, *, replan_after_fill: bool = True) -> bool:
+        station = str(self._deps.get_active_station_key() or "").strip()
+        if not station:
+            return False
+        with self._deps.station_runtime_context(station):
+            with self._fill_lock_for_station(station):
+                return self._fill_queue_once_locked(station, replan_after_fill=replan_after_fill)
+
+    def _fill_queue_once_locked(self, station: str, *, replan_after_fill: bool) -> bool:
         settings = dict(self._deps.get_settings() or {})
         try:
             keep_queue = max(0, int(settings.get("keep_queue") or 0))
         except (TypeError, ValueError):
             keep_queue = 0
-        station = str(self._deps.get_active_station_key() or "").strip()
         if keep_queue <= 0:
             return False
 

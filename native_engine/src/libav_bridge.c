@@ -23,6 +23,7 @@
 #include <libavutil/log.h>
 #include <libavutil/mem.h>
 #include <libavutil/opt.h>
+#include <libavutil/dict.h>
 #include <libavutil/samplefmt.h>
 #include <libswresample/swresample.h>
 
@@ -264,6 +265,8 @@ struct WbLibavDecodeSession {
     bool eof;
     bool failed;
     char error[WB_AUDIO_ERROR_SIZE];
+    char source_metadata[WB_ICECAST_METADATA_SIZE];
+    uint64_t source_metadata_revision;
     WbLibavDecodeConfig config;
     char path[WB_PATH_SIZE];
     unsigned char *fifo;
@@ -695,6 +698,91 @@ static void decode_session_fail(WbLibavDecodeSession *session, const char *messa
     (void)pthread_mutex_unlock(&session->lock);
 }
 
+/* Read upstream metadata from the existing decoder connection, never a second
+ * HTTP request. The libav HTTP protocol exposes ICY metadata on AVIOContext;
+ * Ogg/Vorbis chained streams can update format/stream dictionaries in flight. */
+static void source_metadata_trim(char *value) {
+    size_t n;
+    char *start = value;
+    while (*start == ' ' || *start == '\t') start++;
+    if (start != value) memmove(value, start, strlen(start) + 1U);
+    n = strlen(value);
+    while (n > 0U && (value[n - 1U] == ' ' || value[n - 1U] == '\t'
+        || value[n - 1U] == '\r' || value[n - 1U] == '\n')) value[--n] = '\0';
+    for (n = 0U; value[n] != '\0'; n++) {
+        if (value[n] == '\r' || value[n] == '\n' || value[n] == '\t') value[n] = ' ';
+    }
+}
+
+static void source_metadata_icy_title(const char *packet, char *title, size_t size) {
+    const char *field;
+    const char *end;
+    char quote;
+    size_t length;
+    if (packet == NULL || size == 0U) return;
+    field = strstr(packet, "StreamTitle=");
+    if (field == NULL) return;
+    field += strlen("StreamTitle=");
+    quote = (*field == '\'' || *field == '"') ? *field++ : '\0';
+    end = field;
+    while (*end != '\0' && ((quote != '\0' && *end != quote)
+        || (quote == '\0' && *end != ';'))) end++;
+    length = (size_t)(end - field);
+    if (length >= size) length = size - 1U;
+    memcpy(title, field, length);
+    title[length] = '\0';
+    source_metadata_trim(title);
+}
+
+static void source_metadata_publish(WbLibavDecodeSession *session, const char *metadata) {
+    if (metadata == NULL || metadata[0] == '\0') return;
+    (void)pthread_mutex_lock(&session->lock);
+    if (strcmp(session->source_metadata, metadata) != 0) {
+        copy_text(session->source_metadata, sizeof(session->source_metadata), metadata);
+        session->source_metadata_revision += 1U;
+    }
+    (void)pthread_mutex_unlock(&session->lock);
+}
+
+static void source_metadata_poll(WbLibavDecodeSession *session, AVFormatContext *format, AVStream *stream) {
+    char metadata[WB_ICECAST_METADATA_SIZE] = "";
+    char artist[WB_TRACK_ARTIST_SIZE] = "";
+    char title[WB_TRACK_TITLE_SIZE] = "";
+    AVDictionaryEntry *entry;
+    uint8_t *icy = NULL;
+    if (!session->config.stream_source || format == NULL) return;
+    if (format->pb != NULL
+        && av_opt_get(format->pb, "icy_metadata_packet", AV_OPT_SEARCH_CHILDREN, &icy) >= 0
+        && icy != NULL) {
+        source_metadata_icy_title((const char *)icy, metadata, sizeof(metadata));
+        av_free(icy);
+    }
+    if (metadata[0] == '\0') {
+        entry = av_dict_get(format->metadata, "StreamTitle", NULL, 0);
+        if (entry != NULL) source_metadata_icy_title(entry->value, metadata, sizeof(metadata));
+        if (entry != NULL && metadata[0] == '\0'
+            && strstr(entry->value, "StreamTitle=") == NULL) {
+            copy_text(metadata, sizeof(metadata), entry->value);
+            source_metadata_trim(metadata);
+        }
+    }
+    if (metadata[0] == '\0') {
+        /* Do not forward icy-name, station name, or a URL as a song title. */
+        entry = stream != NULL ? av_dict_get(stream->metadata, "title", NULL, 0) : NULL;
+        if (entry == NULL) entry = av_dict_get(format->metadata, "title", NULL, 0);
+        if (entry != NULL) copy_text(title, sizeof(title), entry->value);
+        entry = stream != NULL ? av_dict_get(stream->metadata, "artist", NULL, 0) : NULL;
+        if (entry == NULL) entry = av_dict_get(format->metadata, "artist", NULL, 0);
+        if (entry != NULL) copy_text(artist, sizeof(artist), entry->value);
+        source_metadata_trim(title);
+        source_metadata_trim(artist);
+        if (title[0] != '\0' && artist[0] != '\0') {
+            (void)snprintf(metadata, sizeof(metadata), "%s - %s", artist, title);
+        } else if (title[0] != '\0') copy_text(metadata, sizeof(metadata), title);
+    }
+    source_metadata_publish(session, metadata);
+}
+
 static void *decode_thread_main(void *context) {
     WbLibavDecodeSession *session = context;
     AVFormatContext *format = NULL;
@@ -753,6 +841,7 @@ static void *decode_thread_main(void *context) {
         goto failed;
     }
     stream = format->streams[audio_index];
+    source_metadata_poll(session, format, stream);
     decoder = avcodec_alloc_context3(codec);
     if (decoder == NULL) {
         copy_text(error, sizeof(error), "cannot allocate libav decoder");
@@ -797,6 +886,7 @@ static void *decode_thread_main(void *context) {
 
     while (!atomic_load_explicit(&session->abort_requested, memory_order_relaxed)) {
         result = av_read_frame(format, packet);
+        source_metadata_poll(session, format, stream);
         if (result == AVERROR_EOF) break;
         if (result == AVERROR(EAGAIN)) continue;
         if (result < 0) {
@@ -1004,6 +1094,19 @@ uint64_t wb_libav_decode_invalid_data_skip_count(WbLibavDecodeSession *session) 
     return atomic_load_explicit(
         &session->invalid_data_skip_count, memory_order_relaxed
     );
+}
+
+uint64_t wb_libav_decode_source_metadata(
+    WbLibavDecodeSession *session, char *metadata, size_t size
+) {
+    uint64_t revision = 0U;
+    if (metadata != NULL && size > 0U) metadata[0] = '\0';
+    if (session == NULL) return 0U;
+    (void)pthread_mutex_lock(&session->lock);
+    revision = session->source_metadata_revision;
+    if (metadata != NULL) copy_text(metadata, size, session->source_metadata);
+    (void)pthread_mutex_unlock(&session->lock);
+    return revision;
 }
 
 void wb_libav_decode_error(

@@ -7339,14 +7339,13 @@ if (completed) {
     if (windowTarget === 'queue' && typeof window.openSchedulerUrlModal === 'function') {
       const result = await window.openSchedulerUrlModal({
         title: 'Add URL to Queue',
-        defaultDuration: 60,
-        defaultInfinite: false
+        allowCustomMetadata: true
       });
       if (!result || !result.url) return;
       await jsonFetch('/api/queue/add-url', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({url: result.url, duration: result.duration})
+        body: JSON.stringify({url: result.url, duration: result.duration, custom_metadata: result.custom_metadata || ""})
       });
       await loadQueue();
       return;

@@ -1,6 +1,6 @@
 import os
 
-APP_VERSION = "6072"
+APP_VERSION = "6085"
 
 
 def _environment_switch_enabled(name: str) -> bool:
@@ -1982,6 +1982,11 @@ def api_dashboard_overview():
 
             title, artist = parse_embedded_querystring_meta(title, artist)
             title, artist = split_combined_artist_title(title, artist)
+            if running and station_key:
+                song = native_status.get("song") if isinstance(native_status, dict) else None
+                if isinstance(song, dict) and song.get("upstream_stream_metadata"):
+                    title = str(song.get("title") or "")
+                    artist = str(song.get("artist") or "")
 
             out.append(
                 {
@@ -3999,10 +4004,12 @@ def _get_station_queue_head_id(station_key: str) -> int:
 
 
 def _perform_station_next_action(station_key: str) -> bool:
-    """Run the same backend NEXT helper that the UI manual Next button uses."""
+    """Run Scheduler Immediate through the delayed full-gain fade handoff."""
     try:
         resolved_station = _resolve_station_id_to_db(station_key or "") or os.path.basename(str(station_key or "").strip())
-        result = _perform_player_manual_next_action(resolved_station, action="next", source="scheduler")
+        result = _perform_player_manual_next_action(
+            resolved_station, action="next", source="scheduler_stream"
+        )
         success = bool((result or {}).get("success"))
         return bool(success)
     except Exception as exc:
@@ -5422,6 +5429,27 @@ def init_db(force: bool = False):
             c.execute(
                 "DELETE FROM queue_item_metadata WHERE queue_id NOT IN (SELECT id FROM queue_items)"
             )
+            # Optional URL title is owned by the queue item, never by a shared track/URL.
+            c.execute(
+                """
+                CREATE TABLE IF NOT EXISTS queue_item_custom_metadata (
+                    queue_id INTEGER PRIMARY KEY,
+                    custom_metadata TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            c.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS queue_item_custom_metadata_cleanup
+                AFTER DELETE ON queue_items
+                BEGIN
+                    DELETE FROM queue_item_custom_metadata WHERE queue_id = OLD.id;
+                END
+                """
+            )
+            c.execute(
+                "DELETE FROM queue_item_custom_metadata WHERE queue_id NOT IN (SELECT id FROM queue_items)"
+            )
 
 
             c.execute(
@@ -5466,6 +5494,28 @@ def init_db(force: bool = False):
                 """
             )
 
+            # Scheduler URL titles belong to a rule, not to the shared track/URL.
+            c.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scheduler_rule_custom_metadata (
+                    rule_id INTEGER PRIMARY KEY,
+                    custom_metadata TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            c.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS scheduler_rule_custom_metadata_cleanup
+                AFTER DELETE ON scheduler_rules
+                BEGIN
+                    DELETE FROM scheduler_rule_custom_metadata WHERE rule_id = OLD.id;
+                END
+                """
+            )
+            c.execute(
+                "DELETE FROM scheduler_rule_custom_metadata "
+                "WHERE rule_id NOT IN (SELECT id FROM scheduler_rules)"
+            )
             conn.commit()
             init_ok = True
         finally:
@@ -7340,7 +7390,12 @@ def api_scheduler_rules_list():
     conn = get_db()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    c.execute("SELECT * FROM scheduler_rules ORDER BY id DESC")
+    c.execute(
+        "SELECT rules.*, COALESCE(metadata.custom_metadata, '') AS custom_metadata "
+        "FROM scheduler_rules AS rules "
+        "LEFT JOIN scheduler_rule_custom_metadata AS metadata ON metadata.rule_id = rules.id "
+        "ORDER BY rules.id DESC"
+    )
     rows = c.fetchall() or []
     conn.close()
     rules = []
@@ -7351,6 +7406,25 @@ def api_scheduler_rules_list():
             item = {k: row[k] for k in row.keys()} if hasattr(row, "keys") else {}
         rules.append(item)
     return jsonify({"ok": True, "rules": rules})
+
+def _scheduler_rule_custom_title(payload: dict, insert_kind: str) -> str:
+    """Validate a rule-specific URL title with the queue URL input contract."""
+    title = str(payload.get("custom_metadata") or "").strip()
+    if len(title.encode("utf-8")) > 240 or any(ord(char) < 32 or ord(char) == 127 for char in title):
+        raise ValueError("Custom metadata must be a single line of up to 240 UTF-8 bytes")
+    return title if insert_kind == "stream" else ""
+
+
+def _write_scheduler_rule_custom_title(conn, rule_id: int, title: str) -> None:
+    """Persist or remove a rule-specific title in the rule's station database."""
+    if title:
+        conn.execute(
+            "INSERT OR REPLACE INTO scheduler_rule_custom_metadata (rule_id, custom_metadata) VALUES (?, ?)",
+            (int(rule_id), title),
+        )
+    else:
+        conn.execute("DELETE FROM scheduler_rule_custom_metadata WHERE rule_id = ?", (int(rule_id),))
+
 
 @app.route("/api/scheduler/rules", methods=["POST"])
 @login_required
@@ -7378,6 +7452,11 @@ def api_scheduler_create_rule():
     if priority not in ("next", "immediate", "end"):
         return jsonify({"ok": False, "error": "Invalid priority."}), 400
 
+    try:
+        custom_metadata = _scheduler_rule_custom_title(payload, insert_kind)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
     next_run = compute_next_run_at(run_when, datetime.now().replace(microsecond=0))
     now = _utc_now_naive().isoformat(timespec="seconds")
     conn = get_db()
@@ -7392,6 +7471,7 @@ def api_scheduler_create_rule():
         """,
         (is_enabled, auto_start, name, run_when, insert_kind, insert_value, priority, next_run, now, now),
     )
+    _write_scheduler_rule_custom_title(conn, int(c.lastrowid), custom_metadata)
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "redirect": url_for("broadcaster")})
@@ -7457,6 +7537,11 @@ def api_scheduler_update_rule(rule_id: int):
     if priority not in ("next", "immediate", "end"):
         return jsonify({"ok": False, "error": "Invalid priority."}), 400
 
+    try:
+        custom_metadata = _scheduler_rule_custom_title(payload, insert_kind)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
     conn = get_db()
     c = conn.cursor()
     c.execute("SELECT id FROM scheduler_rules WHERE id = ?", (rule_id,))
@@ -7474,6 +7559,7 @@ def api_scheduler_update_rule(rule_id: int):
         """,
         (is_enabled, auto_start, name, run_when, insert_kind, insert_value, priority, next_run, now, rule_id),
     )
+    _write_scheduler_rule_custom_title(conn, rule_id, custom_metadata)
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "redirect": url_for("broadcaster")})
@@ -9426,6 +9512,21 @@ def api_library_category_add_url(category_id):
             pass
 
 
+def _save_queue_url_custom_metadata(station_key: str, queue_ids: list[int], value: str) -> None:
+    """Persist a fixed URL title for only the newly enqueued queue items."""
+    if not value or not queue_ids:
+        return
+    conn = get_db_for_station(station_key)
+    try:
+        conn.executemany(
+            "INSERT OR REPLACE INTO queue_item_custom_metadata (queue_id, custom_metadata) VALUES (?, ?)",
+            [(int(queue_id), value) for queue_id in queue_ids],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @app.route("/api/queue/add-url", methods=["POST"])
 @login_required
 def api_queue_add_url():
@@ -9440,12 +9541,16 @@ def api_queue_add_url():
     if not station_key:
         return jsonify({"error": "No active station selected"}), 400
 
+    custom_metadata = str(data.get("custom_metadata") or "").strip()
+    if len(custom_metadata.encode("utf-8")) > 240 or any(ord(char) < 32 for char in custom_metadata):
+        return jsonify({"error": "Custom metadata must be a single line of up to 240 UTF-8 bytes"}), 400
+
     duration = _parse_url_duration_from_payload(data, -1)
     track_ids = _resolve_insert_to_track_ids_for_station(station_key, "stream", f"{duration}:{raw_url}")
     if not track_ids:
         return jsonify({"error": "Unable to resolve URL item"}), 500
 
-    if not _enqueue_track_ids_for_station(station_key, track_ids, "end"):
+    if not _enqueue_track_ids_for_station(station_key, track_ids, "end", custom_metadata=custom_metadata):
         return jsonify({"error": "Unable to add URL to queue"}), 500
 
     _sync_reload_and_rebootstrap_after_queue_mutation("queue_add_url")
@@ -10078,6 +10183,7 @@ def _perform_ab_manual_next_direct_handoff(
     reserved_queue_lines: list[str] | None = None,
     reservation_id: str = "",
     script_interrupt: bool = False,
+    scheduler_stream_interrupt: bool = False,
 ) -> dict | None:
     """Execute one authoritative Manual Next handoff through the player service."""
     return _get_player_handoff_service().direct_handoff(
@@ -10085,6 +10191,7 @@ def _perform_ab_manual_next_direct_handoff(
         reserved_queue_lines=reserved_queue_lines,
         reservation_id=reservation_id,
         script_interrupt=bool(script_interrupt),
+        scheduler_stream_interrupt=bool(scheduler_stream_interrupt),
     )
 
 
@@ -10704,6 +10811,7 @@ def _build_station_queue_plan(
                 COALESCE(queue_items.clean_transition, 0) AS clean_transition,
                 COALESCE(queue_items.script_clean_transition, 0) AS script_clean_transition,
                 COALESCE(queue_item_metadata.enqueue_origin, '') AS enqueue_origin,
+                COALESCE(queue_item_custom_metadata.custom_metadata, '') AS custom_metadata,
                 tracks.path AS path,
                 tracks.filename AS filename,
                 tracks.cue_in_seconds AS cue_in_seconds,
@@ -10715,6 +10823,7 @@ def _build_station_queue_plan(
             FROM queue_items
             JOIN tracks ON tracks.id = queue_items.track_id
             LEFT JOIN queue_item_metadata ON queue_item_metadata.queue_id = queue_items.id
+            LEFT JOIN queue_item_custom_metadata ON queue_item_custom_metadata.queue_id = queue_items.id
             GROUP BY
                 queue_items.id,
                 queue_items.position,
@@ -10722,6 +10831,7 @@ def _build_station_queue_plan(
                 queue_items.clean_transition,
                 queue_items.script_clean_transition,
                 queue_item_metadata.enqueue_origin,
+                queue_item_custom_metadata.custom_metadata,
                 tracks.path,
                 tracks.filename,
                 tracks.cue_in_seconds,
@@ -10806,6 +10916,7 @@ def _build_station_queue_plan(
                     parts[2].strip(), stream_duration,
                     queue_id=queue_id, track_id=track_id, station_key=sk,
                     queue_origin=queue_origin,
+                    custom_metadata=str(row["custom_metadata"] or "").strip() if "custom_metadata" in row.keys() else "",
                 )
                 if descriptor:
                     plan.append(descriptor)
@@ -10824,6 +10935,7 @@ def _build_station_queue_plan(
             descriptor = _ab_build_native_stream_descriptor(
                 media_path, 0, queue_id=queue_id, track_id=track_id, station_key=sk,
                 queue_origin=queue_origin,
+                custom_metadata=str(row["custom_metadata"] or "").strip() if "custom_metadata" in row.keys() else "",
             )
             if descriptor:
                 plan.append(descriptor)
@@ -11545,6 +11657,7 @@ def _ab_build_native_stream_descriptor(
     queue_origin: str = "",
     title: str = "Streaming",
     artist: str = "",
+    custom_metadata: str = "",
 ) -> str:
     """Return one native-deck descriptor for an HTTP/HTTPS radio source.
 
@@ -11566,8 +11679,9 @@ def _ab_build_native_stream_descriptor(
         "track_id": str(int(track_id or 0)),
         "station_key": str(station_key or ""),
         "wb_queue_origin": str(queue_origin or "").strip().lower(),
-        "artist": str(artist or ""),
-        "title": str(title or "Streaming"),
+        "artist": "" if custom_metadata else str(artist or ""),
+        "title": str(custom_metadata or title or "Streaming"),
+        "wb_custom_metadata": "1" if custom_metadata else "0",
         "webradio_url": stream_url,
         "webradio_dur": boundary,
         "wb_source_type": "stream",
@@ -11858,6 +11972,7 @@ def _ab_line_info(uri: str) -> dict:
         "no_overlap": bool(hard_clean or short_no_crossfade),
         "script_clean": bool(hard_clean),
         "stream_source": bool(is_stream),
+        "custom_metadata": str(meta.get("wb_custom_metadata") or "").strip() == "1" and bool(is_stream),
         "stream_infinite": bool(is_stream and str(meta.get("wb_stream_infinite") or "").strip().lower() in ("1", "true", "yes", "on")),
         "stream_duration": max(0.0, _f("wb_stream_duration", "webradio_dur", default=0.0)),
         "raw_uri": str(uri or ""),
@@ -13548,7 +13663,7 @@ def _ab_find_line_index_by_identity(lines: list[str], *, path: str = "", queue_i
 
 
 
-def _ab_start_cueout_transition_now(station_key: str, *, active: str, target: str, current_index: int, target_index: int, fade: float, generation: int = 0, reason: str = "", token: int = 0, manual_next_fast: bool = False, hard_handoff: bool = False, no_crossfade_handoff: bool = False, script_interrupt: bool = False, manual_next_request_id: str = "") -> bool:
+def _ab_start_cueout_transition_now(station_key: str, *, active: str, target: str, current_index: int, target_index: int, fade: float, generation: int = 0, reason: str = "", token: int = 0, manual_next_fast: bool = False, hard_handoff: bool = False, no_crossfade_handoff: bool = False, script_interrupt: bool = False, scheduler_stream_interrupt: bool = False, manual_next_request_id: str = "") -> bool:
     """Start an A/B cue-out transition and make the target authoritative immediately.
 
     This is used by both the normal monitor and the seek-after-near-EOF watchdog.
@@ -13560,6 +13675,7 @@ def _ab_start_cueout_transition_now(station_key: str, *, active: str, target: st
         target = "a" if str(target).lower().endswith("a") else "b"
         fade_raw = max(0.0, float(fade or 0.0))
         hard_select = bool(manual_next_fast or hard_handoff or no_crossfade_handoff)
+        delayed_full_gain_interrupt = bool(script_interrupt or scheduler_stream_interrupt)
         fade = fade_raw if hard_select else max(0.05, fade_raw)
         station_key = str(station_key or get_active_station_key() or "")
         claimed_transition = False
@@ -13639,6 +13755,45 @@ def _ab_start_cueout_transition_now(station_key: str, *, active: str, target: st
                     manual_next_fast=bool(manual_next_fast),
                     manual_next_request_id=str(manual_next_request_id or ""),
                 )
+            else:
+                # v6073: an immediate scheduler URL item may already own the
+                # correct native deck while the network stream is still
+                # connecting/prebuffering. Do not destroy that live candidate
+                # and restart the HTTP stream. Wait for the existing load to
+                # become ready instead. Local files normally hit the ready path
+                # above; this mainly protects internet streams.
+                try:
+                    live_match, _live_key, _live_queue, _live_token = _ab_native_deck_matches_line(
+                        _native_station_state(station_key),
+                        target,
+                        lines[target_index],
+                        require_ready=False,
+                    )
+                    live_candidate = _ab_native_deck_has_live_candidate(
+                        _native_station_state(station_key), target
+                    )
+                except Exception:
+                    live_match = False
+                    live_candidate = False
+                if live_match and live_candidate:
+                    ready, _ready_state, _ready_reason = _ab_wait_for_native_deck_prebuffer(
+                        target,
+                        lines[target_index],
+                        station_key=station_key,
+                        timeout_sec=15.0,
+                        poll_interval_sec=0.05,
+                    )
+                    if ready:
+                        need_push = False
+                        _preload_reuse_trace(
+                            "ab_hard_select_reused_live_native_preload",
+                            station_key=station_key,
+                            deck=str(target).upper(),
+                            reason=reason,
+                            target_index=int(target_index),
+                            manual_next_fast=bool(manual_next_fast),
+                            manual_next_request_id=str(manual_next_request_id or ""),
+                        )
         if script_interrupt and not hard_select:
             try:
                 script_target_info = _ab_line_info(lines[target_index])
@@ -13697,6 +13852,109 @@ def _ab_start_cueout_transition_now(station_key: str, *, active: str, target: st
                 station_key=station_key,
                 timeout_sec=4.0,
                 poll_interval_sec=0.02,
+            )
+            if not ready:
+                with _AB_PLAYER_LOCK:
+                    if claimed_transition:
+                        _AB_PLAYER_STATE["transition_starting"] = False
+                return False
+            need_push = False
+        if scheduler_stream_interrupt and not hard_select:
+            try:
+                stream_target_info = _ab_line_info(lines[target_index])
+                stream_target_path = normalize_media_path(str(stream_target_info.get("file") or _ab_line_path(lines[target_index]) or ""))
+                stream_expected_key = f'{int(stream_target_info.get("queue_id") or 0)}:{int(stream_target_info.get("track_id") or 0)}:{stream_target_path}'
+            except Exception:
+                stream_expected_key = ""
+            try:
+                stream_native_matches, _stream_native_key, stream_queue_id, stream_slot_token = _ab_native_deck_matches_line(
+                    _native_station_state(station_key),
+                    target,
+                    lines[target_index],
+                    require_ready=True,
+                )
+            except Exception:
+                stream_native_matches = False
+                stream_queue_id = 0
+                stream_slot_token = ""
+            need_push = not bool(
+                loaded_index == target_index
+                and stream_expected_key
+                and loaded_key_now == stream_expected_key
+                and stream_native_matches
+            )
+            if not need_push:
+                _preload_reuse_trace(
+                    "ab_scheduler_stream_interrupt_reused_native_preload",
+                    station_key=station_key,
+                    deck=str(target).upper(),
+                    queue_id=int(stream_queue_id or 0),
+                    slot_token=str(stream_slot_token or ""),
+                    reason=reason,
+                    target_index=int(target_index),
+                    manual_next_fast=False,
+                    scheduler_stream_interrupt=True,
+                    manual_next_request_id=str(manual_next_request_id or ""),
+                )
+            else:
+                try:
+                    live_match, _live_key, live_queue_id, live_slot_token = _ab_native_deck_matches_line(
+                        _native_station_state(station_key),
+                        target,
+                        lines[target_index],
+                        require_ready=False,
+                    )
+                    live_candidate = _ab_native_deck_has_live_candidate(
+                        _native_station_state(station_key), target
+                    )
+                except Exception:
+                    live_match = False
+                    live_candidate = False
+                    live_queue_id = 0
+                    live_slot_token = ""
+                if live_match and live_candidate:
+                    ready, _ready_state, _ready_reason = _ab_wait_for_native_deck_prebuffer(
+                        target,
+                        lines[target_index],
+                        station_key=station_key,
+                        timeout_sec=15.0,
+                        poll_interval_sec=0.05,
+                    )
+                    if ready:
+                        need_push = False
+                        _preload_reuse_trace(
+                            "ab_scheduler_stream_interrupt_reused_live_preload",
+                            station_key=station_key,
+                            deck=str(target).upper(),
+                            queue_id=int(live_queue_id or 0),
+                            slot_token=str(live_slot_token or ""),
+                            reason=reason,
+                            target_index=int(target_index),
+                            manual_next_fast=False,
+                            scheduler_stream_interrupt=True,
+                            manual_next_request_id=str(manual_next_request_id or ""),
+                        )
+        if scheduler_stream_interrupt and not hard_select and need_push:
+            if not _ab_push(
+                target,
+                lines[target_index],
+                attempts=8,
+                retry_delay=0.05,
+                clear_slot=True,
+                manual_next_fast=False,
+                reject_if_active_deck=True,
+                reject_if_playback_started=True,
+            ):
+                with _AB_PLAYER_LOCK:
+                    if claimed_transition:
+                        _AB_PLAYER_STATE["transition_starting"] = False
+                return False
+            ready, _ready_state, _ready_reason = _ab_wait_for_native_deck_prebuffer(
+                target,
+                lines[target_index],
+                station_key=station_key,
+                timeout_sec=15.0,
+                poll_interval_sec=0.05,
             )
             if not ready:
                 with _AB_PLAYER_LOCK:
@@ -13773,6 +14031,12 @@ def _ab_start_cueout_transition_now(station_key: str, *, active: str, target: st
                 fade,
                 station_key=station_key,
             )
+        elif scheduler_stream_interrupt:
+            _ab_script_interrupt_to(
+                target,
+                fade,
+                station_key=station_key,
+            )
         else:
             _ab_transition_to(target, fade)
         started_line = lines[target_index]
@@ -13814,7 +14078,7 @@ def _ab_start_cueout_transition_now(station_key: str, *, active: str, target: st
                 pi = {target: final_current_index}
             else:
                 pi[target] = final_current_index
-            if script_interrupt:
+            if delayed_full_gain_interrupt:
                 _AB_PLAYER_STATE["active"] = active
                 _AB_PLAYER_STATE["current_index"] = int(current_index)
                 _AB_PLAYER_STATE["started_at"] = float(
@@ -13835,7 +14099,7 @@ def _ab_start_cueout_transition_now(station_key: str, *, active: str, target: st
             _AB_PLAYER_STATE["lines"] = final_lines
             _AB_PLAYER_STATE["durations"] = final_durations
             _AB_PLAYER_STATE["fadeouts"] = final_fadeouts
-            if not script_interrupt:
+            if not delayed_full_gain_interrupt:
                 _AB_PLAYER_STATE["next_index"] = final_next_index
             _AB_PLAYER_STATE["player_index"] = pi
             if manual_next_fast:
@@ -15250,14 +15514,22 @@ def _mark_queue_items_origin_for_station(
             pass
 
 
-def _enqueue_track_ids_for_station(station_key: str, track_ids: list[int], priority: str) -> bool:
-    """Insert scheduler track_ids and notify the native DB-backed planner."""
+def _enqueue_track_ids_for_station(
+    station_key: str, track_ids: list[int], priority: str, *, custom_metadata: str = ""
+) -> bool:
+    """Insert tracks and persist optional queue-specific metadata before replanning."""
     created_queue_ids = _enqueue_track_ids_return_queue_ids_for_station(station_key, track_ids, priority)
     if not created_queue_ids:
         return False
     if not _mark_queue_items_origin_for_station(station_key, created_queue_ids, "scheduler"):
         _get_playback_repository().remove_queue_items(created_queue_ids, station_key=station_key)
         return False
+    if custom_metadata:
+        try:
+            _save_queue_url_custom_metadata(station_key, created_queue_ids, custom_metadata)
+        except Exception:
+            _get_playback_repository().remove_queue_items(created_queue_ids, station_key=station_key)
+            return False
     try:
         wake_autodj_worker()
     except Exception:
@@ -15267,7 +15539,9 @@ def _enqueue_track_ids_for_station(station_key: str, track_ids: list[int], prior
     return True
 
 
-def _apply_scheduler_rule_queue_action_for_station(station_key: str, track_ids: list[int], priority: str) -> bool:
+def _apply_scheduler_rule_queue_action_for_station(
+    station_key: str, track_ids: list[int], priority: str, *, custom_metadata: str = ""
+) -> bool:
     """Apply scheduler queue changes using the same ordering/next behavior as the classic player flow.
 
     - end: append and sync
@@ -15279,6 +15553,8 @@ def _apply_scheduler_rule_queue_action_for_station(station_key: str, track_ids: 
         return False
 
     if normalized_priority == "end":
+        if custom_metadata:
+            return _enqueue_track_ids_for_station(station_key, track_ids, "end", custom_metadata=custom_metadata)
         return _enqueue_track_ids_for_station(station_key, track_ids, "end")
 
     created_queue_ids = _enqueue_track_ids_return_queue_ids_for_station(station_key, track_ids, "end")
@@ -15287,6 +15563,12 @@ def _apply_scheduler_rule_queue_action_for_station(station_key: str, track_ids: 
     if not _mark_queue_items_origin_for_station(station_key, created_queue_ids, "scheduler"):
         _get_playback_repository().remove_queue_items(created_queue_ids, station_key=station_key)
         return False
+    if custom_metadata:
+        try:
+            _save_queue_url_custom_metadata(station_key, created_queue_ids, custom_metadata)
+        except Exception:
+            _get_playback_repository().remove_queue_items(created_queue_ids, station_key=station_key)
+            return False
 
     moved = _move_station_queue_ids_to_front(station_key, created_queue_ids)
     if not moved:
@@ -15374,15 +15656,17 @@ _WEEKDAYS = {
 }
 
 def _parse_time_hhmm(s):
+    """Parse a Scheduler clock time; legacy HH:MM means HH:MM:00."""
     s = (s or "").strip()
-    m = re.match(r"^(\d{1,2}):(\d{2})$", s)
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})(?::(\d{2}))?", s)
     if not m:
         return None
     hh = int(m.group(1))
     mm = int(m.group(2))
-    if hh < 0 or hh > 23 or mm < 0 or mm > 59:
+    ss = int(m.group(3) or 0)
+    if hh > 23 or mm > 59 or ss > 59:
         return None
-    return (hh, mm)
+    return (hh, mm, ss)
 
 def compute_next_run_at(run_when, now=None):
     now_dt = (now or datetime.now()).replace(microsecond=0)
@@ -15390,27 +15674,27 @@ def compute_next_run_at(run_when, now=None):
     if not s:
         return None
 
-    m = re.match(r"^(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2})$", s)
+    m = re.match(r"^(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2}(?::\d{2})?)$", s)
     if m:
         tt = _parse_time_hhmm(m.group(2))
         if not tt:
             return None
         dt0 = _dt.strptime(m.group(1), "%Y-%m-%d").replace(
-            hour=tt[0], minute=tt[1], second=0, microsecond=0
+            hour=tt[0], minute=tt[1], second=tt[2], microsecond=0
         )
         return dt0.isoformat(timespec="seconds") if dt0 > now_dt else None
 
-    m = re.match(r"^(Everyday)\s+(\d{1,2}:\d{2})$", s, flags=re.I)
+    m = re.match(r"^(Everyday)\s+(\d{1,2}:\d{2}(?::\d{2})?)$", s, flags=re.I)
     if m:
         tt = _parse_time_hhmm(m.group(2))
         if not tt:
             return None
-        cand = now_dt.replace(hour=tt[0], minute=tt[1], second=0)
+        cand = now_dt.replace(hour=tt[0], minute=tt[1], second=tt[2])
         if cand <= now_dt:
             cand += timedelta(days=1)
         return cand.isoformat(timespec="seconds")
 
-    m = re.match(r"^([A-Za-z]+)\s+(\d{1,2}:\d{2})$", s)
+    m = re.match(r"^([A-Za-z]+)\s+(\d{1,2}:\d{2}(?::\d{2})?)$", s)
     if m:
         day = m.group(1).lower()
         if day not in _WEEKDAYS:
@@ -15418,7 +15702,7 @@ def compute_next_run_at(run_when, now=None):
         tt = _parse_time_hhmm(m.group(2))
         if not tt:
             return None
-        cand = now_dt.replace(hour=tt[0], minute=tt[1], second=0)
+        cand = now_dt.replace(hour=tt[0], minute=tt[1], second=tt[2])
         days = (_WEEKDAYS[day] - cand.weekday()) % 7
         cand += timedelta(days=days)
         if cand <= now_dt:
@@ -15550,7 +15834,11 @@ def scheduler_process_due_once():
                 except Exception as exc:
                     pass
                 c.execute(
-                    "SELECT * FROM scheduler_rules WHERE is_enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ? ORDER BY next_run_at ASC, id ASC",
+                    "SELECT rules.*, COALESCE(metadata.custom_metadata, '') AS custom_metadata "
+                    "FROM scheduler_rules AS rules "
+                    "LEFT JOIN scheduler_rule_custom_metadata AS metadata ON metadata.rule_id = rules.id "
+                    "WHERE rules.is_enabled = 1 AND rules.next_run_at IS NOT NULL "
+                    "AND next_run_at <= ? ORDER BY next_run_at ASC, id ASC",
                     (now,),
                 )
                 rows = c.fetchall() or []
@@ -15579,7 +15867,13 @@ def scheduler_process_due_once():
                         track_ids = _resolve_insert_to_track_ids_for_station(station_key, insert_kind, insert_value)
 
                     if track_ids:
-                        ok = _apply_scheduler_rule_queue_action_for_station(station_key, track_ids, priority)
+                        custom_metadata = str(r.get("custom_metadata") or "").strip() if insert_kind == "stream" else ""
+                        if custom_metadata:
+                            ok = _apply_scheduler_rule_queue_action_for_station(
+                                station_key, track_ids, priority, custom_metadata=custom_metadata
+                            )
+                        else:
+                            ok = _apply_scheduler_rule_queue_action_for_station(station_key, track_ids, priority)
                     else:
                         pass
 
@@ -15879,10 +16173,14 @@ def _native_status_line_for_state(station_key: str, state: dict) -> str:
     except Exception:
         queue_id = 0
     path = normalize_media_path(str(state.get("native_audio_probe_path") or ""))
-    with _AB_PLAYER_LOCK:
-        snapshot = dict(_AB_PLAYER_STATE or {})
-        lines = list(snapshot.get("lines") or [])
-        player_index = dict(snapshot.get("player_index") or {})
+    # _AB_PLAYER_STATE is station-scoped. Pin the requested station before
+    # taking the snapshot so background script/scheduler workers cannot fall
+    # back to whichever station is globally active in the UI.
+    with station_runtime_context(station_key):
+        with _AB_PLAYER_LOCK:
+            snapshot = dict(_AB_PLAYER_STATE or {})
+            lines = list(snapshot.get("lines") or [])
+            player_index = dict(snapshot.get("player_index") or {})
     index = _ab_find_line_index_by_identity(lines, path=path, queue_id=queue_id)
     if index < 0:
         try:
@@ -15890,6 +16188,48 @@ def _native_status_line_for_state(station_key: str, state: dict) -> str:
         except Exception:
             index = -1
     return lines[index] if 0 <= index < len(lines) else ""
+
+
+def _native_active_url_metadata(state: dict, info: dict, store: dict) -> tuple[str, str] | None:
+    """Return the audible URL's upstream title from its native Icecast snapshot.
+
+    The source metadata has already passed the native active-deck ownership
+    check. Recheck its queue ID and slot token here: an earlier URL, a prepared
+    deck or an unrelated station must never relabel the current UI track.
+    """
+    if not bool(state.get("running")):
+        return None
+    path = str(state.get("native_audio_probe_path") or info.get("file") or store.get("file") or "").strip().lower()
+    if not (path.startswith("http://") or path.startswith("https://")):
+        return None
+    try:
+        queue_id = int(state.get("queue_id") or 0)
+    except (TypeError, ValueError):
+        return None
+    token = str(state.get("slot_token") or "").strip()
+    if queue_id <= 0 or not token:
+        return None
+    icecast = state.get("icecast_state")
+    if not isinstance(icecast, dict):
+        return None
+    # Multi-encoder setups may expose different streams. Only an enabled
+    # output with the exact currently audible track identity is authoritative.
+    outputs = icecast.get("outputs")
+    candidates = outputs if isinstance(outputs, list) and outputs else [icecast]
+    for output in candidates:
+        if not isinstance(output, dict) or not bool(output.get("enabled")):
+            continue
+        try:
+            metadata_queue_id = int(output.get("queue_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if metadata_queue_id != queue_id or str(output.get("slot_token") or "").strip() != token:
+            continue
+        metadata = str(output.get("metadata_value") or output.get("current_metadata") or "").strip()
+        if not metadata or metadata.casefold() == "streaming":
+            continue
+        return split_combined_artist_title(metadata, "")
+    return None
 
 
 def _native_api_status_payload(station_key: str, state: dict, *, with_progress: bool = False) -> dict:
@@ -15942,6 +16282,12 @@ def _native_api_status_payload(station_key: str, state: dict, *, with_progress: 
     ))
     title = str(info.get("title") or store.get("title") or "").strip()
     artist = str(info.get("artist") or store.get("artist") or "").strip()
+    custom_metadata = str(info.get("title") or "").strip() if info.get("custom_metadata") and int(info.get("queue_id") or 0) == queue_id else ""
+    upstream_metadata = None if custom_metadata else _native_active_url_metadata(state, info, store)
+    if custom_metadata:
+        title, artist = split_combined_artist_title(custom_metadata, "")
+    elif upstream_metadata is not None:
+        title, artist = upstream_metadata
     album = str(info.get("album") or store.get("album") or "").strip()
     year = _normalize_year_metadata(info.get("year") or store.get("year") or "")
     if path and (not title or not artist or not album or not year):
@@ -16004,6 +16350,8 @@ def _native_api_status_payload(station_key: str, state: dict, *, with_progress: 
             "track_id": track_id,
             "active_player": active,
             "source": "native_get_state",
+            "upstream_stream_metadata": upstream_metadata is not None,
+            "custom_stream_metadata": bool(custom_metadata),
         },
         "station_id": sk,
         "audio_engine": "native",

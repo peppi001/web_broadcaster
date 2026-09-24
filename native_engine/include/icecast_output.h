@@ -12,6 +12,10 @@ void wb_icecast_output_activate_track(
     char deck,
     const WbDeckState *track
 );
+/* Apply only to the currently audible, exact-identity URL track. */
+bool wb_icecast_output_update_source_metadata(
+    WbEngineState *state, char deck, const WbDeckState *track, const char *metadata
+);
 void wb_icecast_output_seek_track(
     WbEngineState *state,
     char deck,
@@ -55,6 +59,10 @@ int wb_icecast_output_schedule_hard_handoff(
     size_t primed_bytes,
     char *error,
     size_t error_size
+);
+/* True only for the exact primed target before its audible boundary. */
+bool wb_icecast_output_is_pending_handoff_target(
+    WbEngineState *state, char deck, const WbDeckState *track
 );
 bool wb_icecast_output_has_pending_hard_handoff(
     WbEngineState *state,

@@ -18,7 +18,7 @@
 #define WB_FAULT_MODE_SIZE 64
 #define WB_FAULT_REASON_SIZE 128
 #define WB_AUDIO_ALIAS_CAPACITY 32
-#define WB_NATIVE_DAEMON_VERSION "6072"
+#define WB_NATIVE_DAEMON_VERSION "6085"
 #define WB_AUDIO_SAMPLE_RATE 44100
 #define WB_AUDIO_CHANNELS 2
 #define WB_AUDIO_BYTES_PER_SAMPLE 2
@@ -72,6 +72,7 @@ typedef struct {
     bool hard_clean;
     bool short_no_crossfade;
     bool stream_source;
+    bool custom_metadata;
     bool stream_infinite;
     int64_t stream_duration_ms;
     bool playback_started;
