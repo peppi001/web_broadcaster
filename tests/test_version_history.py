@@ -223,6 +223,12 @@ class VersionHistoryTests(unittest.TestCase):
         self.assertIn("embedded artist/title tags", text)
         self.assertIn("terminal native_audio_probe_eof event", text)
         self.assertIn("live pytest progress", text)
+        self.assertIn("v6076 - 2026-09-18", text)
+        self.assertIn("flaky native audio-probe regression test", text)
+        self.assertIn("Updated APP_VERSION and native daemon version to 6076.", text)
+        self.assertIn("v6077 - 2026-09-18", text)
+        self.assertIn("cross-station protected-playback leak", text)
+        self.assertIn("Updated APP_VERSION and native daemon version to 6077.", text)
 
 
 if __name__ == "__main__":
