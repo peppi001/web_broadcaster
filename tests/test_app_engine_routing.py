@@ -183,9 +183,15 @@ class AppEngineRoutingTests(unittest.TestCase):
         self.assertIn('Encoder starting', js)
 
     def test_native_status_progress_does_not_double_add_cue_in(self) -> None:
+        import contextlib
         import threading
-        namespace = {'normalize_media_path': lambda value: str(value or ''), '_AB_PLAYER_LOCK': threading.RLock(), '_AB_PLAYER_STATE': {'lines': ['current-line'], 'player_index': {'a': 0}, 'current_index': 0}, '_ab_find_line_index_by_identity': lambda lines, **identity: 0, '_ab_line_info': lambda line: {'file': '/tmp/song.mp3', 'title': 'Title', 'artist': 'Artist', 'album': 'Album', 'year': '2001', 'queue_id': 42, 'track_id': 7, 'orig_total': 202.272, 'cue_in': 2.0}, 'NOW_PLAYING_LOCK': threading.RLock(), '_get_now_playing_store': lambda station: {}, 'get_autodj_notice': lambda station: None, '_normalize_year_metadata': lambda value: str(value or ''), 'read_media_metadata': lambda path: {}, 'guess_metadata_from_filename': lambda path: {}, 'format_seconds': lambda value: str(value)}
+
+        @contextlib.contextmanager
+        def station_runtime_context(_station_key):
+            yield
+        namespace = {'station_runtime_context': station_runtime_context, 'normalize_media_path': lambda value: str(value or ''), '_AB_PLAYER_LOCK': threading.RLock(), '_AB_PLAYER_STATE': {'lines': ['current-line'], 'player_index': {'a': 0}, 'current_index': 0}, '_ab_find_line_index_by_identity': lambda lines, **identity: 0, '_ab_line_info': lambda line: {'file': '/tmp/song.mp3', 'title': 'Title', 'artist': 'Artist', 'album': 'Album', 'year': '2001', 'queue_id': 42, 'track_id': 7, 'orig_total': 202.272, 'cue_in': 2.0}, 'NOW_PLAYING_LOCK': threading.RLock(), '_get_now_playing_store': lambda station: {}, 'get_autodj_notice': lambda station: None, '_normalize_year_metadata': lambda value: str(value or ''), 'read_media_metadata': lambda path: {}, 'guess_metadata_from_filename': lambda path: {}, 'format_seconds': lambda value: str(value)}
         exec(self._function_source('_native_status_line_for_state'), namespace)
+        exec(self._function_source('_native_active_url_metadata'), namespace)
         exec(self._function_source('_native_api_status_payload'), namespace)
         payload = namespace['_native_api_status_payload']('db-Test.db', {'running': True, 'active_deck': 'A', 'queue_id': 42, 'native_audio_probe_queue_id': 42, 'native_audio_probe_path': '/tmp/song.mp3', 'native_audio_probe_position_ms': 53522, 'native_audio_probe_source_end_ms': 202272}, with_progress=True)
         self.assertAlmostEqual(payload['song']['elapsed'], 53.522, places=3)

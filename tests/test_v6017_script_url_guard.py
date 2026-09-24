@@ -79,7 +79,7 @@ class V6018ScriptUrlGuardTests(unittest.TestCase):
 
     def test_general_scheduler_next_is_not_mislabeled_as_station_script(self) -> None:
         source = self._function_source("_perform_station_next_action")
-        self.assertIn('source="scheduler"', source)
+        self.assertIn('source="scheduler_stream"', source)
         self.assertNotIn('source="script"', source)
 
     def test_script_runtime_has_all_guards_and_no_catchup(self) -> None:

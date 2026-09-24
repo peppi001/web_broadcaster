@@ -380,17 +380,40 @@ class NativeAudioProbeTests(unittest.TestCase):
                 self.assertNotIn("native_audio_probe_error", names)
                 self.assertNotIn("native_audio_probe_early_eof", names)
 
+                # The terminal EOF event is the canonical atomic record for this
+                # playback generation.  Immediately after EOF the generic state
+                # snapshot may already select another candidate/deck on a loaded
+                # build host, so terminal identity and duration must not be read
+                # back from the generic native_audio_probe_* snapshot fields.
+                eof_event = next(
+                    event
+                    for event in observed
+                    if event.event == "native_audio_probe_eof"
+                    and event.queue_id == 9001
+                    and event.slot_token == "probe-token-1"
+                    and event.deck == "A"
+                )
+                self.assertEqual(eof_event.queue_id, 9001)
+                self.assertEqual(eof_event.slot_token, "probe-token-1")
+                self.assertEqual(eof_event.deck, "A")
+                self.assertEqual(int(eof_event.payload.get("cue_in_ms") or 0), 50)
+                self.assertEqual(int(eof_event.payload.get("cue_out_ms") or 0), 250)
+                self.assertGreater(int(eof_event.payload.get("decoded_samples") or 0), 0)
+                self.assertAlmostEqual(
+                    int(eof_event.payload.get("final_actual_duration_ms") or 0),
+                    200,
+                    delta=30,
+                )
+                self.assertAlmostEqual(
+                    int(eof_event.payload.get("source_position_ms") or 0),
+                    250,
+                    delta=30,
+                )
+
+                # Non-terminal capability state remains safe to inspect through
+                # the generic snapshot.
                 state = native.get_state()
                 self.assertTrue(state["native_audio_probe_enabled"])
-                self.assertFalse(state["native_audio_probe_running"])
-                self.assertTrue(state["native_audio_probe_eof"])
-                self.assertEqual(state["native_audio_probe_queue_id"], 9001)
-                self.assertEqual(state["native_audio_probe_slot_token"], "probe-token-1")
-                self.assertEqual(state["native_audio_probe_cue_in_ms"], 50)
-                self.assertEqual(state["native_audio_probe_cue_out_ms"], 250)
-                self.assertGreater(state["native_audio_probe_decoded_samples"], 0)
-                self.assertAlmostEqual(state["native_audio_probe_actual_duration_ms"], 200, delta=30)
-                self.assertAlmostEqual(state["native_audio_probe_position_ms"], 250, delta=30)
                 self.assertTrue(state["audio_output_enabled"])
             finally:
                 unsubscribe()

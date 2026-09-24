@@ -2199,6 +2199,94 @@ class NativeIcecastOutputTests(unittest.TestCase):
         finally:
             mock.close()
 
+    def test_short_id_survives_outgoing_fifo_and_next_track_recovers(self) -> None:
+        """A 1.1-second ID must not expire before its delayed audible hard boundary."""
+        if self.ffmpeg is None:
+            self.skipTest("ffmpeg is required")
+        mock = _MockIcecastSource()
+        mock.start()
+        try:
+            with self._daemon(ring_ms=4000, prebuffer_ms=300, station_key="short-id-handoff") as (native, tmp):
+                paths = [tmp / name for name in ("outgoing.mp3", "short-id.mp3", "following.mp3")]
+                for path, duration, frequency in zip(paths, (4.0, 1.10, 3.0), (440, 880, 550)):
+                    subprocess.run([
+                        self.ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error",
+                        "-f", "lavfi", "-i", f"sine=frequency={frequency}:duration={duration}",
+                        "-ar", "44100", "-ac", "2", "-codec:a", "libmp3lame",
+                        "-q:a", "3", "-y", str(path),
+                    ], check=True)
+                boundary = threading.Event()
+                following_started = threading.Event()
+                id_eof = threading.Event()
+                events: list[tuple[str, int, dict]] = []
+                event_lock = threading.Lock()
+
+                def on_event(event: EngineEvent) -> None:
+                    with event_lock:
+                        events.append((event.event, int(event.queue_id or 0), dict(event.payload)))
+                    if event.event == "track_started" and int(event.queue_id or 0) == 607802:
+                        boundary.set()
+                    if event.event == "track_started" and int(event.queue_id or 0) == 607803:
+                        following_started.set()
+                    if event.event == "native_audio_probe_eof" and int(event.queue_id or 0) == 607802:
+                        id_eof.set()
+
+                def uri(index: int, duration: float) -> str:
+                    return (
+                        f'annotate:queue_id="{607801 + index}",track_id="{607801 + index}",'
+                        f'station_key="short-id-handoff",wb_ab_slot_token="short-id-{index}",'
+                        f'wb_audio_start="0.000",wb_play_start="0.000",'
+                        f'wb_crossfade_trigger="{duration:.3f}",wb_effective_end="{duration:.3f}",'
+                        f'wb_orig_total="{duration:.3f}",'
+                        'wb_short_no_crossfade="1",wb_sam_short_no_crossfade="1":'
+                        f'{paths[index]}'
+                    )
+
+                unsubscribe = native.subscribe_events(on_event)
+                try:
+                    native.configure_icecast_output(
+                        enabled=True, host="127.0.0.1", port=mock.port,
+                        mount="/short-id-handoff.mp3", username="source", password="secret",
+                        bitrate_kbps=128, stream_name="Short ID boundary", public_stream=False,
+                    )
+                    native.start()
+                    self.assertTrue(native.load_deck("A", uri(0, 4.0), clear_slot=True))
+                    self.assertTrue(native.load_deck("B", uri(1, 1.10), clear_slot=True))
+                    deadline = time.monotonic() + 5.0
+                    while time.monotonic() < deadline:
+                        state = native.get_state()
+                        if (state.get("native_audio_deck_a_prebuffer_ready")
+                                and state.get("native_audio_deck_b_prebuffer_ready")):
+                            break
+                        time.sleep(0.02)
+                    self.assertTrue(state.get("native_audio_deck_b_prebuffer_ready"), state)
+                    native.select_deck("A", station_key="short-id-handoff")
+                    # A stream may retain more outgoing PCM than this ID contains.
+                    self.assertTrue(boundary.wait(8.0), f"Short ID never reached audible boundary: {events[-12:]}")
+                    with event_lock:
+                        boundary_events = [item for item in events if item[0] == "track_started" and item[1] == 607802]
+                    self.assertEqual(boundary_events[0][2].get("source"), "native_hard_handoff_boundary")
+                    self.assertFalse(id_eof.is_set(), "Short ID terminated before its audible boundary")
+                    self.assertTrue(native.load_deck("A", uri(2, 3.0), clear_slot=True))
+                    self.assertTrue(following_started.wait(6.0), f"Playback did not progress after the ID: {events[-16:]}")
+                    with event_lock:
+                        started = [item[1] for item in events if item[0] == "track_started"]
+                        eof_indices = [i for i, item in enumerate(events)
+                                       if item[0] == "native_audio_probe_eof" and item[1] == 607802]
+                        boundary_indices = [i for i, item in enumerate(events)
+                                            if item[0] == "track_started" and item[1] == 607802]
+                    self.assertEqual(started.count(607802), 1, started)
+                    self.assertEqual(started.count(607803), 1, started)
+                    if eof_indices:
+                        self.assertGreater(eof_indices[0], boundary_indices[0], events[-16:])
+                    self.assertFalse(native.get_state().get("hard_handoff_armed"), native.get_state())
+                finally:
+                    unsubscribe()
+                    native.stop()
+                    native.clear_icecast_output()
+        finally:
+            mock.close()
+
     def test_native_timing_does_not_reselect_consumed_short_item_deck(self) -> None:
         if self.ffmpeg is None:
             self.skipTest("ffmpeg is required")
