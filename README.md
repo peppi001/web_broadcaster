@@ -1,5 +1,7 @@
 # Web Broadcaster
 
+<img width="887" height="477" alt="web_broadcaster_small" src="https://github.com/user-attachments/assets/c430886a-6fe1-4346-be73-a8d22036a16e" />
+
 **Current version: v6085**
 
 Web Broadcaster is a Linux-based, browser-operated radio automation and streaming application. It provides a multi-station Studio and Dashboard, a managed native audio engine, playlist and queue management, AutoDJ rotation, scheduled playback, scripted announcements, DSP, and Icecast output.
