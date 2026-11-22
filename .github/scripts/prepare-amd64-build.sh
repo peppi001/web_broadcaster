@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Prepare the validated v6085 build environment, but always package the
+# Prepare the version-independent build environment and always package the
 # checked-out Git commit rather than the source ZIP shipped in the buildkit.
 # The buildkit is a pinned dependency/toolchain source, never a build output.
 
@@ -14,9 +14,9 @@ BUILD_ROOT="$SOURCE_ROOT/.ci-build"
 # Build input is checked into this branch. Only generated source/output goes
 # to the temporary work directory. No release download is required.
 BUILDKIT_SOURCE="$SOURCE_ROOT/buildkit"
-BUILDKIT_DIR="$BUILD_ROOT/Web_Broadcaster_v6085_buildkit"
-BUILDER="$BUILDKIT_DIR/build_v6085_linux.sh"
-SOURCE_ARCHIVE="$BUILDKIT_DIR/Web_Broadcaster_v6085.zip"
+BUILDKIT_DIR="$BUILD_ROOT/buildkit"
+BUILDER="$BUILDKIT_DIR/build.sh"
+SOURCE_ARCHIVE="$BUILDKIT_DIR/Web_Broadcaster_source.zip"
 CHECKSUMS="$BUILDKIT_DIR/SHA256SUMS.txt"
 
 command -v git >/dev/null
@@ -24,7 +24,7 @@ command -v python3 >/dev/null
 command -v sha256sum >/dev/null
 test -n "$GITHUB_ENV"
 
-test -f "$BUILDKIT_SOURCE/build_v6085_linux.sh" || {
+test -f "$BUILDKIT_SOURCE/build.sh" || {
     echo "Required versioned buildkit files are absent from Git." >&2
     exit 1
 }
@@ -33,9 +33,8 @@ test -f "$BUILDKIT_SOURCE/SHA256SUMS.txt"
 echo "Checking all versioned build inputs against their original SHA256 manifest..."
 (
     cd "$BUILDKIT_SOURCE"
-    # The original source ZIP is intentionally not tracked. It is recreated
-    # from the exact Git commit below, and its checksum is then updated.
-    grep -v '  Web_Broadcaster_v6085\.zip$' SHA256SUMS.txt | sha256sum --check --status
+    # The source ZIP is generated from Git and is not a tracked dependency.
+    sha256sum --check --status SHA256SUMS.txt
 )
 
 echo "Staging version-controlled FFmpeg, SoundSolution and builder files..."
@@ -59,7 +58,7 @@ source_archive, builder_path, checksums_path, github_env = map(Path, sys.argv[1:
 
 # The repository still tracks retired SVGs, old build objects and a
 # v6042-only regression test. They were deliberately omitted from the
-# validated v6085 source ZIP and must not be included in release builds.
+# validated release source ZIP and must not be included in release builds.
 # Everything else comes from the exact checked-out Git commit.
 def is_retired_build_input(name: str) -> bool:
     return (
@@ -104,36 +103,17 @@ daemon_match = re.search(
 if daemon_match is None or daemon_match.group(1) != version:
     raise SystemExit("Native daemon version does not match app.py APP_VERSION.")
 
-builder = builder_path.read_text(encoding="utf-8")
-old_pin = "EXPECTED_APP_VERSION=6085"
-if builder.count(old_pin) != 1:
-    raise SystemExit("Unexpected source-version pin in the validated builder.")
-builder_path.write_text(
-    builder.replace(old_pin, f"EXPECTED_APP_VERSION={version}", 1),
+# The committed builder and dependency archives already passed Git-pinned
+# checksum validation. Add only the generated Git source ZIP to the staging
+# manifest so the original builder verifies it before compilation.
+manifest = checksums_path.read_text(encoding="utf-8")
+if f"  {source_archive.name}" in manifest:
+    raise SystemExit("Generated source already exists in the static checksum manifest.")
+digest = hashlib.sha256(source_archive.read_bytes()).hexdigest()
+checksums_path.write_text(
+    manifest.rstrip("\n") + f"\n{digest}  {source_archive.name}\n",
     encoding="utf-8",
 )
-
-modified = {
-    source_archive.name: source_archive,
-    builder_path.name: builder_path,
-}
-lines = checksums_path.read_text(encoding="utf-8").splitlines()
-found = set()
-updated_lines = []
-for line in lines:
-    checksum, separator, filename = line.partition("  ")
-    if not separator:
-        raise SystemExit(f"Invalid buildkit checksum line: {line}")
-    if filename in modified:
-        filename_path = modified[filename]
-        actual = hashlib.sha256(filename_path.read_bytes()).hexdigest()
-        updated_lines.append(f"{actual}  {filename}")
-        found.add(filename)
-    else:
-        updated_lines.append(line)
-if found != set(modified):
-    raise SystemExit(f"Missing expected checksum entries: {set(modified) - found}")
-checksums_path.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
 
 with github_env.open("a", encoding="utf-8") as env:
     env.write(f"APP_VERSION={version}\n")

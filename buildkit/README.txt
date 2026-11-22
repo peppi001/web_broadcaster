@@ -1,7 +1,7 @@
-Web Broadcaster v6085 self-contained buildkit
+Web Broadcaster version-independent Linux buildkit
 =============================================
 
-Buildkit revision: build_v6085_linux-r1-scheduler-url-custom-metadata
+Buildkit revision: web-broadcaster-linux-build-git-r1
 
 v6085 enables optional fixed metadata on Scheduler Add URL, matching Queue Add URL.
 Leave the field empty to forward dynamic ICY/Ogg/Vorbis upstream metadata.
@@ -81,7 +81,7 @@ point. URL targets retain the v6074 live-preload reuse and 15-second startup
 protection. Operator Manual Next, Scheduler Next/End, normal automatic crossfade
 and the v6072 script-interrupt path remain unchanged.
 
-The v6065 build baseline, retained unchanged in v6084, standardizes every amd64 release build on a Debian 12 userspace baseline. On an x86-64 host, the normal `./build_v6085_linux.sh` command now transparently creates or reuses the bundled Podman builder image, mounts the buildkit into it, and re-enters the same build script inside Debian 12. The inner build refuses to compile unless `/etc/os-release` confirms Debian 12 and Python 3.11 is active, preventing an accidental Debian 13 glibc baseline from entering a release package.
+The v6065 build baseline, retained unchanged in v6084, standardizes every amd64 release build on a Debian 12 userspace baseline. On an x86-64 host, the normal `./build.sh` command now transparently creates or reuses the bundled Podman builder image, mounts the buildkit into it, and re-enters the same build script inside Debian 12. The inner build refuses to compile unless `/etc/os-release` confirms Debian 12 and Python 3.11 is active, preventing an accidental Debian 13 glibc baseline from entering a release package.
 
 The Debian 12 builder image contains the complete release toolchain used by the regression and packaging stages: Python 3.11 with the matching shared libpython, FFmpeg/FFprobe, Node.js, GCC/build-essential, binutils and the normal archive/file utilities. As a result, the full source regression suite runs in the controlled build environment without relying on whichever Python/FFmpeg/Node versions happen to be installed on the Debian 13 host. Raspberry Pi 5 arm64 builds remain native and unchanged.
 
@@ -141,9 +141,9 @@ On an amd64 host, install Podman once:
   sudo apt update
   sudo apt install podman
 
-Then every release build uses the same command as before:
+For a prepared source ZIP, run:
 
-  ./build_v6085_linux.sh
+  ./build.sh
 
 No manual `podman run` command is required. On first use, or whenever the bundled
 Containerfile changes, the script builds `localhost/web-broadcaster-builder:debian12`.
@@ -158,7 +158,7 @@ to run instead of being skipped.
 
 Optional explicit source-test skip, only when deliberately requested:
 
-  RUN_SOURCE_TESTS=0 ./build_v6085_linux.sh
+  RUN_SOURCE_TESTS=0 ./build.sh
 
 The amd64 host itself no longer needs Python, FFmpeg, Node.js, GCC or PyInstaller
 for a release build; those tools live in the Debian 12 builder image. Network
@@ -201,7 +201,7 @@ For public Internet deployment, the preferred architecture remains:
   Internet TCP 80/443
           -> nginx on the same host
           -> HTTP 127.0.0.1:15000
-          -> Web Broadcaster v6080
+          -> Web Broadcaster
 
 Exact Web Broadcaster nginx mode:
 
@@ -227,15 +227,15 @@ Output
 
 On amd64:
 
-  Web_Broadcaster_Linux_v6085_amd64.tar.gz
-  Web_Broadcaster_Linux_v6085_amd64.tar.gz.sha256
+  Web_Broadcaster_Linux_v<APP_VERSION>_amd64.tar.gz
+  Web_Broadcaster_Linux_v<APP_VERSION>_amd64.tar.gz.sha256
 
 On Raspberry Pi 5:
 
-  Web_Broadcaster_Linux_v6085_arm64_rpi5.tar.gz
-  Web_Broadcaster_Linux_v6085_arm64_rpi5.tar.gz.sha256
+  Web_Broadcaster_Linux_v<APP_VERSION>_arm64_rpi5.tar.gz
+  Web_Broadcaster_Linux_v<APP_VERSION>_arm64_rpi5.tar.gz.sha256
 
-The archive contains one directory named Web_Broadcaster_Linux_v6085 with the
+The archive contains one directory named Web_Broadcaster_Linux_v<APP_VERSION> with the
 final package contract:
 
   start.sh
@@ -258,7 +258,7 @@ Containerfile.debian12 defines the controlled amd64 release userspace.
 .containerignore keeps the Podman build context minimal; no Web Broadcaster source or binary payload is copied into the builder image.
 
 ffmpeg_build/ and soundsolution_build/ are byte-for-byte inherited from v6051.
-Web_Broadcaster_v6085.zip is architecture-neutral. The build script stages the
+Web_Broadcaster_source.zip is architecture-neutral. The build script stages the
 matching native packages into a temporary source tree before compilation and
 regression testing.
 

@@ -1,7 +1,7 @@
 # Generated source archives, output packages and test/build workspaces.
 .ci-build/
 buildkit/build_work/
-buildkit/Web_Broadcaster_v6085.zip
+buildkit/Web_Broadcaster_source.zip
 buildkit/Web_Broadcaster_Linux_*.tar.gz
 buildkit/Web_Broadcaster_Linux_*.tar.gz.sha256
 

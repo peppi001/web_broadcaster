@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Web Broadcaster v6085 self-contained Linux buildkit.
-# Script revision: build_v6085_linux-r1-scheduler-url-custom-metadata (amd64 + native Raspberry Pi 5).
+# Web Broadcaster current self-contained Linux buildkit.
+# Script revision: build_current_linux-r1-scheduler-url-custom-metadata (amd64 + native Raspberry Pi 5).
 #
 # The buildkit contains the architecture-neutral Web Broadcaster source ZIP and
 # both architecture-specific FFmpeg SDK/runtime and SoundSolution source/runtime
@@ -29,11 +29,11 @@ set -Eeuo pipefail
 # library and ss18.dat are copied byte-for-byte and verified before and after.
 #
 # Usage:
-#   chmod +x build_v6085_linux.sh
-#   ./build_v6085_linux.sh
+#   chmod +x build.sh
+#   ./build.sh
 
-SCRIPT_REVISION="build_v6085_linux-r1-scheduler-url-custom-metadata"
-SOURCE_ZIP="${1:-Web_Broadcaster_v6085.zip}"
+SCRIPT_REVISION="web-broadcaster-linux-build-git-r1"
+SOURCE_ZIP="${1:-Web_Broadcaster_source.zip}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 WORK_DIR="${SCRIPT_DIR}/build_work"
@@ -43,7 +43,6 @@ CONTAINERFILE_DEBIAN12="${SCRIPT_DIR}/Containerfile.debian12"
 PODMAN_IMAGE="localhost/web-broadcaster-builder:debian12"
 PODMAN_LABEL_KEY="com.webbroadcaster.builder.containerfile-sha256"
 
-EXPECTED_APP_VERSION=6085
 EXPECTED_SOURCE_NATIVE_RPATH='$ORIGIN/../../lib:$ORIGIN/../../bin/soundsolution'
 EXPECTED_SOURCE_MAKEFILE_RPATH='$$ORIGIN/../../lib:$$ORIGIN/../../bin/soundsolution'
 EXPECTED_FINAL_NATIVE_RPATH='$ORIGIN'
@@ -137,7 +136,7 @@ run_amd64_in_debian12_container() {
             source_container="/work/${relative_source}"
             ;;
         *)
-            source_container="/input/Web_Broadcaster_v6085.zip"
+            source_container="/input/Web_Broadcaster_source.zip"
             extra_mount_args=(-v "${source_host}:${source_container}:ro")
             ;;
     esac
@@ -152,7 +151,7 @@ run_amd64_in_debian12_container() {
         "${extra_mount_args[@]}" \
         -w /work \
         "${PODMAN_IMAGE}" \
-        ./build_v6085_linux.sh "${source_container}"
+        ./build.sh "${source_container}"
 }
 
 extract_single_top_directory() {
@@ -191,7 +190,7 @@ verify_elf_machine() {
     esac
 }
 
-[[ $# -le 1 ]] || error "Usage: $0 [Web_Broadcaster_v6085.zip]"
+[[ $# -le 1 ]] || error "Usage: $0 [Web_Broadcaster_source.zip]"
 [[ "${RUN_SOURCE_TESTS}" == "0" || "${RUN_SOURCE_TESTS}" == "1" ]] \
     || error "RUN_SOURCE_TESTS must be 0 or 1."
 [[ "$(uname -s)" == "Linux" ]] || error "This build script must run on Linux."
@@ -312,7 +311,7 @@ if [[ "${TOP_COUNT}" == "1" ]]; then
     fi
 fi
 
-printf '%s\n' ">>> Verifying the architecture-neutral v6085 source layout..."
+printf '%s\n' ">>> Verifying the architecture-neutral current source layout..."
 [[ -f "${SOURCE_ROOT}/app.py" ]] || error "app.py not found in extracted source."
 [[ -f "${SOURCE_ROOT}/cheroot_cleanup.py" ]] || error "cheroot_cleanup.py not found in extracted source."
 [[ -f "${SOURCE_ROOT}/version.txt" ]] || error "version.txt not found."
@@ -329,9 +328,9 @@ printf '%s\n' ">>> Verifying the architecture-neutral v6085 source layout..."
 [[ -f "${SOURCE_ROOT}/docs/DEPLOYMENT_GUIDE.md" ]] || error "docs/DEPLOYMENT_GUIDE.md not found."
 [[ -f "${SOURCE_ROOT}/docs/NGINX_PUBLIC_HTTPS.md" ]] || error "docs/NGINX_PUBLIC_HTTPS.md not found."
 [[ -f "${SOURCE_ROOT}/docs/nginx_web_broadcaster.conf.example" ]] || error "docs/nginx_web_broadcaster.conf.example not found."
-[[ ! -e "${SOURCE_ROOT}/templates" ]] || error "Legacy top-level templates directory must not exist in v6085."
-[[ ! -e "${SOURCE_ROOT}/static" ]] || error "Legacy top-level static directory must not exist in v6085."
-[[ ! -e "${SOURCE_ROOT}/html/static/icons" ]] || error "Retired html/static/icons directory must not exist in v6085."
+[[ ! -e "${SOURCE_ROOT}/templates" ]] || error "Legacy top-level templates directory must not exist in current."
+[[ ! -e "${SOURCE_ROOT}/static" ]] || error "Legacy top-level static directory must not exist in current."
+[[ ! -e "${SOURCE_ROOT}/html/static/icons" ]] || error "Retired html/static/icons directory must not exist in current."
 python3 - "${SOURCE_ROOT}/html" <<'PY_WEB_ASSET_AUDIT'
 from pathlib import Path
 import sys
@@ -339,7 +338,7 @@ import sys
 html_root = Path(sys.argv[1])
 svg_files = sorted(str(path.relative_to(html_root.parent)) for path in html_root.rglob("*") if path.is_file() and path.suffix.lower() == ".svg")
 if svg_files:
-    raise SystemExit("Obsolete SVG web assets remain in v6085: " + ", ".join(svg_files))
+    raise SystemExit("Obsolete SVG web assets remain in current: " + ", ".join(svg_files))
 
 offenders = []
 for path in html_root.rglob("*"):
@@ -349,11 +348,11 @@ for path in html_root.rglob("*"):
     if ".svg" in text.lower() or "icons/" in text.lower():
         offenders.append(str(path.relative_to(html_root.parent)))
 if offenders:
-    raise SystemExit("Retired SVG/icons references remain in v6085: " + ", ".join(sorted(offenders)))
-print("OK: v6085 web asset cleanup verified (no SVG files, icons directory, or SVG/icons references).")
+    raise SystemExit("Retired SVG/icons references remain in current: " + ", ".join(sorted(offenders)))
+print("OK: current web asset cleanup verified (no SVG files, icons directory, or SVG/icons references).")
 PY_WEB_ASSET_AUDIT
 
-printf '%s\n' ">>> Verifying v6085 Internet-security source contract..."
+printf '%s\n' ">>> Verifying current Internet-security source contract..."
 python3 - "${SOURCE_ROOT}" <<'PY_SECURITY_AUDIT'
 from pathlib import Path
 import re
@@ -369,11 +368,11 @@ cheroot_cleanup = (root / "cheroot_cleanup.py").read_text(encoding="utf-8")
 
 def require(text: str, haystack: str, description: str) -> None:
     if text not in haystack:
-        raise SystemExit(f"Missing v6085 security contract: {description}")
+        raise SystemExit(f"Missing current security contract: {description}")
 
 def reject(text: str, haystack: str, description: str) -> None:
     if text in haystack:
-        raise SystemExit(f"Forbidden v6085 security contract content: {description}")
+        raise SystemExit(f"Forbidden current security contract content: {description}")
 
 reject("change_this_secret_key", app, "hardcoded Flask secret fallback")
 reject("app.run(", app, "Flask development server")
@@ -419,10 +418,10 @@ for pin in (
 ):
     require(pin, requirements, f"dependency pin {pin}")
 
-print("OK: v6085 Internet-security source contract verified.")
+print("OK: current Internet-security source contract verified.")
 PY_SECURITY_AUDIT
 
-printf '%s\n' ">>> Verifying v6085 deployment documentation contract..."
+printf '%s\n' ">>> Verifying current deployment documentation contract..."
 python3 - "${SOURCE_ROOT}" <<'PY_NGINX_DOC_AUDIT'
 from pathlib import Path
 import sys
@@ -448,7 +447,7 @@ for marker in (
     'docs/NGINX_PUBLIC_HTTPS.md',
 ):
     if marker not in deployment:
-        raise SystemExit(f"Missing v6085 deployment-mode guide marker: {marker}")
+        raise SystemExit(f"Missing current deployment-mode guide marker: {marker}")
 
 for marker in (
     'PUBLIC_INTERNET_MODE="ON"',
@@ -461,7 +460,7 @@ for marker in (
     'Do not forward TCP 15000.',
 ):
     if marker not in guide:
-        raise SystemExit(f"Missing v6085 nginx deployment guide marker: {marker}")
+        raise SystemExit(f"Missing current nginx deployment guide marker: {marker}")
 
 for marker in (
     'proxy_pass http://127.0.0.1:15000;',
@@ -474,10 +473,10 @@ for marker in (
     'location = /api/ui/events',
 ):
     if marker not in conf:
-        raise SystemExit(f"Missing v6085 nginx example marker: {marker}")
+        raise SystemExit(f"Missing current nginx example marker: {marker}")
 if conf.count('proxy_buffering off;') != 2:
-    raise SystemExit("Both v6085 SSE locations must explicitly disable nginx response buffering.")
-print("OK: v6085 LAN/public deployment documentation contract verified.")
+    raise SystemExit("Both current SSE locations must explicitly disable nginx response buffering.")
+print("OK: current LAN/public deployment documentation contract verified.")
 PY_NGINX_DOC_AUDIT
 
 for archive in "${FFMPEG_SDK_ARCHIVE}" "${FFMPEG_RUNTIME_ARCHIVE}" "${SOUNDSOLUTION_RUNTIME_ARCHIVE}"; do
@@ -548,7 +547,7 @@ for library in "${SOURCE_FFMPEG_LIBS[@]}"; do
 done
 
 if find "${SOURCE_ROOT}" -type l -print -quit | grep -q .; then
-    error "The staged v6085 source tree must be completely symlink-free."
+    error "The staged current source tree must be completely symlink-free."
 fi
 
 mapfile -t SOURCE_SS_ENTRIES < <(
@@ -571,8 +570,6 @@ print(match.group(1).strip())
 PY
 )"
 [[ "${APP_VERSION}" =~ ^[0-9]+$ ]] || error "APP_VERSION must be numeric, got: ${APP_VERSION}"
-[[ "${APP_VERSION}" == "${EXPECTED_APP_VERSION}" ]] \
-    || error "This builder requires Web Broadcaster v${EXPECTED_APP_VERSION}; source is v${APP_VERSION}."
 
 DAEMON_VERSION="$(python3 - "${SOURCE_ROOT}/native_engine/include/engine.h" <<'PY'
 from pathlib import Path
@@ -596,7 +593,7 @@ MAKEFILE_PATH="${SOURCE_ROOT}/native_engine/Makefile"
 grep -Fq -- '-l:libsoundsolution.so.2' "${MAKEFILE_PATH}" \
     || error "Native Makefile does not link libsoundsolution.so.2."
 grep -Fq -- "${EXPECTED_SOURCE_MAKEFILE_RPATH}" "${MAKEFILE_PATH}" \
-    || error "Native Makefile does not contain the v6085 source-tree private-library RPATH."
+    || error "Native Makefile does not contain the current source-tree private-library RPATH."
 
 OUTPUT_BASE="Web_Broadcaster_Linux_v${APP_VERSION}"
 OUTPUT_DIR="${WORK_DIR}/${OUTPUT_BASE}"
@@ -775,7 +772,7 @@ if [[ "${RUN_SOURCE_TESTS}" == "1" ]]; then
     else
         printf '%s\n' ">>> Node.js not found; optional JavaScript execution test will be skipped."
     fi
-    printf '%s\n' ">>> Running complete v6085 source regression suite..."
+    printf '%s\n' ">>> Running complete current source regression suite..."
     REGRESSION_LOG="${WORK_DIR}/source-regression.log"
     printf '%s\n' ">>> Regression progress is shown live and also saved to: ${REGRESSION_LOG}"
     if (
@@ -783,10 +780,10 @@ if [[ "${RUN_SOURCE_TESTS}" == "1" ]]; then
         PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONUNBUFFERED=1 \
             python -u -m pytest -q --tb=short 2>&1 | tee "${REGRESSION_LOG}"
     ); then
-        printf '%s\n' ">>> Complete v6085 source regression suite passed."
+        printf '%s\n' ">>> Complete current source regression suite passed."
     else
         regression_rc=$?
-        printf '%s\n' "ERROR: Complete v6085 source regression suite failed." >&2
+        printf '%s\n' "ERROR: Complete current source regression suite failed." >&2
         python3 - "${REGRESSION_LOG}" <<'PY_REGRESSION_SUMMARY'
 from pathlib import Path
 import sys

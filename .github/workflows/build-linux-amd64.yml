@@ -60,7 +60,7 @@ jobs:
           RUN_SOURCE_TESTS: "1"
         run: |
           set -Eeuo pipefail
-          bash "$BUILDKIT_DIR/build_v6085_linux.sh"
+          bash "$BUILDKIT_DIR/build.sh"
 
       - name: Verify completed release archive and checksum
         shell: bash
@@ -106,6 +106,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: web-broadcaster-amd64-regression-log
-          path: .ci-build/Web_Broadcaster_v6085_buildkit/build_work/source-regression.log
+          path: .ci-build/buildkit/build_work/source-regression.log
           if-no-files-found: ignore
           retention-days: 14
