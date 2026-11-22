@@ -48,3 +48,29 @@ Release versioning: edit `APP_VERSION` in `app.py` and append the appropriate
 change entry to `version.txt`. Do not edit the native C header to bump the
 version. The CI build never increments a version automatically; it validates
 and packages the version already selected in `app.py`.
+
+## Raspberry Pi 5 (ARM64) GitHub Actions build
+
+`.github/workflows/build-linux-rpi5-arm64.yml` runs on GitHub's native
+`ubuntu-24.04-arm` runner inside a Debian 12 ARM64 container. It uses the
+same Git source staging helper and the same version-independent
+`buildkit/build.sh` as the amd64 job, with all source regressions enabled.
+The application version still comes only from `app.py`.
+
+The validated Git-tracked `ffmpeg_build/` ARM64 Cortex-A76 SDK/runtime
+(FFmpeg 7.1.5) and `soundsolution_build/` Raspberry Pi 5 runtime
+(SoundSolution 6.0.0) are used without rebuilding or replacing them.
+The original native builder retains `-mcpu=cortex-a76`,
+`-mtune=cortex-a76`, its ELF checks, SoundSolution DSP smoke test,
+native-daemon smoke test, package hash verification, and the Debian 12
+GLIBC_2.36 ceiling for the CI artifact.
+
+Only ARM64 Debian 12 CI jobs pass `WB_RPI5_CI_BUILD=1` to allow a
+non-Raspberry-Pi ARM64 host. A normal local ARM64 build still requires
+actual Raspberry Pi 5 hardware. CI verifies the ARM64 package and
+native tests but cannot substitute for running on physical Raspberry Pi 5.
+
+The ARM64 artifact is
+`Web_Broadcaster_Linux_v<APP_VERSION>_arm64_rpi5.tar.gz` with its
+`.sha256` verification file, distributed via the ARM64 workflow's
+GitHub Actions Artifacts section.

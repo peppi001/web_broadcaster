@@ -248,11 +248,24 @@ case "${MACHINE}" in
         ;;
     aarch64|arm64)
         MODEL="$(tr -d '\0' </proc/device-tree/model 2>/dev/null || true)"
-        [[ "${MODEL}" == *"Raspberry Pi 5"* ]] \
-            || error "ARM64 builds are restricted to a real Raspberry Pi 5; detected model: ${MODEL:-unknown}"
+        if [[ "${MODEL}" == *"Raspberry Pi 5"* ]]; then
+            BUILD_BASELINE_SUMMARY="Native Raspberry Pi 5 AArch64 build"
+        elif [[ "${WB_RPI5_CI_BUILD:-0}" == "1" ]]; then
+            # A GitHub-hosted ARM64 runner is not a Raspberry Pi. Permit the
+            # identical Cortex-A76 target only in a validated Debian 12 CI job.
+            [[ -r /etc/os-release ]] || error "ARM64 CI requires /etc/os-release."
+            . /etc/os-release
+            [[ "${ID:-}" == "debian" && "${VERSION_ID:-}" == 12* ]] \
+                || error "ARM64 CI requires Debian 12, found ${PRETTY_NAME:-unknown}."
+            [[ "${PYTHON_MAJOR_MINOR}" == "3.11" ]] \
+                || error "ARM64 CI requires Python 3.11, found ${PYTHON_MAJOR_MINOR}."
+            BUILD_BASELINE_SUMMARY="Native ARM64 GitHub runner; Debian 12; Raspberry Pi 5 Cortex-A76 target"
+            printf '%s\n' ">>> Verified Debian 12 ARM64 CI baseline (not physical Raspberry Pi 5)."
+        else
+            error "ARM64 builds require Raspberry Pi 5 hardware or verified Debian 12 ARM64 CI; detected ${MODEL:-unknown}."
+        fi
         TARGET_TAG="arm64_rpi5"
         TARGET_DESCRIPTION="Raspberry Pi 5 / Cortex-A76 / AArch64"
-        BUILD_BASELINE_SUMMARY="Native Raspberry Pi 5 AArch64 build"
         TARGET_CFLAGS="-O3 -std=c11 -Wall -Wextra -Wpedantic -pthread -mcpu=cortex-a76 -mtune=cortex-a76"
         FFMPEG_SDK_ARCHIVE="${FFMPEG_RPI5_SDK}"
         FFMPEG_RUNTIME_ARCHIVE="${FFMPEG_RPI5_RUNTIME}"
@@ -1581,7 +1594,7 @@ if grep -Fq 'Web Broadcaster debug logging: OFF' "${OUTPUT_DIR}/start.sh"; then
     error "Packaged start.sh must remain silent in OFF mode."
 fi
 
-if [[ "${TARGET_TAG}" == "amd64" ]]; then
+if [[ "${TARGET_TAG}" == "amd64" || "${WB_RPI5_CI_BUILD:-0}" == "1" ]]; then
     printf '%s\n' ">>> Auditing packaged ELF files against the Debian 12 glibc 2.36 ABI ceiling..."
     python3 - "${OUTPUT_DIR}" <<'PY_GLIBC_AUDIT'
 from pathlib import Path

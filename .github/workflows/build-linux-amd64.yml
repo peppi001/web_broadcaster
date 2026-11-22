@@ -46,7 +46,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           echo "Compiling checked-out Git commit: $GITHUB_SHA"
-          bash .github/scripts/prepare-amd64-build.sh
+          bash .github/scripts/prepare-git-build.sh
           # Fixture generation requires lavfi, deliberately excluded from the
           # buildkit's custom Web Broadcaster FFmpeg runtime.
           command -v ffmpeg
