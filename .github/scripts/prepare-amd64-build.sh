@@ -11,32 +11,38 @@ set -Eeuo pipefail
 git config --global --add safe.directory "$GITHUB_WORKSPACE"
 SOURCE_ROOT="$(git rev-parse --show-toplevel)"
 BUILD_ROOT="$SOURCE_ROOT/.ci-build"
-BUILDKIT_ARCHIVE="$BUILD_ROOT/Web_Broadcaster_v6085_buildkit.zip"
+# Build input is checked into this branch. Only generated source/output goes
+# to the temporary work directory. No release download is required.
+BUILDKIT_SOURCE="$SOURCE_ROOT/buildkit"
 BUILDKIT_DIR="$BUILD_ROOT/Web_Broadcaster_v6085_buildkit"
 BUILDER="$BUILDKIT_DIR/build_v6085_linux.sh"
 SOURCE_ARCHIVE="$BUILDKIT_DIR/Web_Broadcaster_v6085.zip"
 CHECKSUMS="$BUILDKIT_DIR/SHA256SUMS.txt"
 
-RELEASE_URL="https://github.com/peppi001/web_broadcaster/releases/download/v6085/Web_Broadcaster_v6085_buildkit.zip"
-RELEASE_SHA256="f056e2828bc327f68e39d64a311a26ed51de636b7eb0cc959f83eed9fecbe404"
-
-command -v curl >/dev/null
 command -v git >/dev/null
-command -v unzip >/dev/null
 command -v python3 >/dev/null
 command -v sha256sum >/dev/null
 test -n "$GITHUB_ENV"
 
-echo "Preparing pinned toolchain from Web Broadcaster v6085 release..."
-mkdir -p "$BUILD_ROOT"
-curl --fail --location --show-error --silent --retry 4 \
-    --output "$BUILDKIT_ARCHIVE" "$RELEASE_URL"
-printf '%s  %s\n' "$RELEASE_SHA256" "$BUILDKIT_ARCHIVE" | sha256sum --check --status
-unzip -q "$BUILDKIT_ARCHIVE" -d "$BUILD_ROOT"
+test -f "$BUILDKIT_SOURCE/build_v6085_linux.sh" || {
+    echo "Required versioned buildkit files are absent from Git." >&2
+    exit 1
+}
+test -f "$BUILDKIT_SOURCE/SHA256SUMS.txt"
 
+echo "Checking all versioned build inputs against their original SHA256 manifest..."
+(
+    cd "$BUILDKIT_SOURCE"
+    # The original source ZIP is intentionally not tracked. It is recreated
+    # from the exact Git commit below, and its checksum is then updated.
+    grep -v '  Web_Broadcaster_v6085\.zip$' SHA256SUMS.txt | sha256sum --check --status
+)
+
+echo "Staging version-controlled FFmpeg, SoundSolution and builder files..."
+mkdir -p "$BUILD_ROOT"
+cp -a "$BUILDKIT_SOURCE" "$BUILDKIT_DIR"
 test -f "$BUILDER"
 test -f "$CHECKSUMS"
-echo "Pinned buildkit checksum verified."
 
 echo "Archiving exact checked-out Git HEAD (not the buildkit source)..."
 git -C "$SOURCE_ROOT" diff --quiet HEAD --
@@ -59,6 +65,8 @@ def is_retired_build_input(name: str) -> bool:
     return (
         name == ".github/"
         or name.startswith(".github/")
+        or name == "buildkit/"
+        or name.startswith("buildkit/")
         or name == "html/static/icons/"
         or name.startswith("html/static/icons/")
         or (name.startswith("native_engine/src/") and name.endswith(".o"))

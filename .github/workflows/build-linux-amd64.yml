@@ -11,10 +11,66 @@ permissions:
 
 concurrency:
   group: web-broadcaster-amd64-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
+  vendor-dependencies:
+    name: Commit pinned FFmpeg and SoundSolution build inputs to the development branch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    outputs:
+      head_sha: ${{ steps.vendor.outputs.head_sha }}
+    steps:
+      - name: Checkout development branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/github-actions-build
+          fetch-depth: 1
+
+      - name: Import pinned buildkit into Git once, if absent
+        id: vendor
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          if [[ ! -f buildkit/build_v6085_linux.sh ]]; then
+            archive="$(mktemp --suffix=.zip)"
+            tmp="$(mktemp -d)"
+            trap 'rm -rf "$archive" "$tmp"' EXIT
+            echo "Importing validated v6085 toolchain once into Git..."
+            curl --fail --location --show-error --silent --retry 4 \
+              --output "$archive" \
+              "https://github.com/peppi001/web_broadcaster/releases/download/v6085/Web_Broadcaster_v6085_buildkit.zip"
+            echo "f056e2828bc327f68e39d64a311a26ed51de636b7eb0cc959f83eed9fecbe404  $archive" | sha256sum --check
+            unzip -q "$archive" -d "$tmp"
+            old="$tmp/Web_Broadcaster_v6085_buildkit"
+            (
+              cd "$old"
+              sha256sum --check --status SHA256SUMS.txt
+            )
+            mkdir -p buildkit
+            cp -a "$old/." buildkit/
+            # Source is always taken from Git, not this historical release ZIP.
+            rm -f buildkit/Web_Broadcaster_v6085.zip
+            git add -f buildkit/
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "Build: vendor versioned FFmpeg and SoundSolution assets and the validated Linux builder"
+            git push origin HEAD:refs/heads/feature/github-actions-build
+          fi
+          test -f buildkit/build_v6085_linux.sh
+          test -f buildkit/ffmpeg_build/wb-ffmpeg-7.1.5-amd64-runtime.tar.gz
+          test -f buildkit/ffmpeg_build/wb-ffmpeg-7.1.5-arm64-rpi5-runtime.tar.gz
+          test -f buildkit/soundsolution_build/wb-soundsolution-6.1.0-amd64-runtime.tar.gz
+          test -f buildkit/soundsolution_build/wb-soundsolution-6.0.0-arm64-rpi5-runtime.tar.gz
+          echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   build-amd64:
+    needs: vendor-dependencies
+    permissions:
+      contents: read
     name: Build full Debian 12 compatible amd64 package
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -35,9 +91,10 @@ jobs:
             python3 python3-venv sed tar unzip
           rm -rf /var/lib/apt/lists/*
 
-      - name: Checkout current branch commit
+      - name: Checkout the exact vendored Git commit
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.vendor-dependencies.outputs.head_sha }}
           persist-credentials: false
           fetch-depth: 1
 
