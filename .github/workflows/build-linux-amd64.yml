@@ -1,0 +1,112 @@
+name: Build Web Broadcaster (Linux amd64)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - feature/github-actions-build
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-broadcaster-amd64-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-amd64:
+    name: Build full Debian 12 compatible amd64 package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: debian:12-slim
+      # Reap orphaned child processes after forced parent termination in daemon tests.
+      options: --init
+
+    steps:
+      - name: Install Debian 12 build dependencies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            bash build-essential binutils ca-certificates coreutils curl \
+            ffmpeg file findutils gawk git grep libpython3.11 make nodejs \
+            python3 python3-venv sed tar unzip
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Checkout current branch commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Prepare pinned build dependencies with current Git sources
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "Compiling checked-out Git commit: $GITHUB_SHA"
+          bash .github/scripts/prepare-git-build.sh
+          # Fixture generation requires lavfi, deliberately excluded from the
+          # buildkit's custom Web Broadcaster FFmpeg runtime.
+          command -v ffmpeg
+          command -v ffprobe
+          ffmpeg -hide_banner -loglevel error -f lavfi -i "sine=frequency=440:duration=0.01" -f null -
+
+      - name: Build and test complete Linux amd64 package
+        shell: bash
+        env:
+          WB_DEBIAN12_CONTAINER: "1"
+          RUN_SOURCE_TESTS: "1"
+        run: |
+          set -Eeuo pipefail
+          bash "$BUILDKIT_DIR/build.sh" "$SOURCE_DIR"
+
+      - name: Verify completed release archive and checksum
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd "$BUILDKIT_DIR"
+          package="Web_Broadcaster_Linux_v${APP_VERSION}_amd64.tar.gz"
+          test -s "$package"
+          test -s "$package.sha256"
+          sha256sum --check "$package.sha256"
+          tar -tzf "$package" > package-members.txt
+          base="Web_Broadcaster_Linux_v${APP_VERSION}"
+          for path in \
+            "$base/start.sh" \
+            "$base/README.txt" \
+            "$base/bin/web_broadcaster" \
+            "$base/bin/web_broadcaster_engine" \
+            "$base/bin/libsoundsolution.so.2" \
+            "$base/bin/libavformat.so.61" \
+            "$base/bin/ss18.dat" \
+            "$base/html/broadcaster.html" \
+            "$base/docs/DEPLOYMENT_GUIDE.md"; do
+            grep -Fxq "$path" package-members.txt || {
+              echo "Missing final package member: $path" >&2
+              exit 1
+            }
+          done
+          echo "Verified complete Web Broadcaster v${APP_VERSION} amd64 package."
+
+      - name: Upload deployable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Web_Broadcaster_Linux_v${{ env.APP_VERSION }}_amd64
+          path: |
+            ${{ env.BUILDKIT_DIR }}/Web_Broadcaster_Linux_v${{ env.APP_VERSION }}_amd64.tar.gz
+            ${{ env.BUILDKIT_DIR }}/Web_Broadcaster_Linux_v${{ env.APP_VERSION }}_amd64.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Upload regression log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-broadcaster-amd64-regression-log
+          path: .ci-build/buildkit/build_work/source-regression.log
+          if-no-files-found: ignore
+          retention-days: 14
