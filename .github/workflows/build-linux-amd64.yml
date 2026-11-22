@@ -60,7 +60,7 @@ jobs:
           RUN_SOURCE_TESTS: "1"
         run: |
           set -Eeuo pipefail
-          bash "$BUILDKIT_DIR/build.sh"
+          bash "$BUILDKIT_DIR/build.sh" "$SOURCE_DIR"
 
       - name: Verify completed release archive and checksum
         shell: bash

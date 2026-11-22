@@ -141,9 +141,9 @@ On an amd64 host, install Podman once:
   sudo apt update
   sudo apt install podman
 
-For a prepared source ZIP, run:
+From the repository root, after preparing a clean Git source directory, run:
 
-  ./build.sh
+  ./build.sh /path/to/clean/git-source
 
 No manual `podman run` command is required. On first use, or whenever the bundled
 Containerfile changes, the script builds `localhost/web-broadcaster-builder:debian12`.
@@ -158,7 +158,7 @@ to run instead of being skipped.
 
 Optional explicit source-test skip, only when deliberately requested:
 
-  RUN_SOURCE_TESTS=0 ./build.sh
+  RUN_SOURCE_TESTS=0 ./build.sh /path/to/clean/git-source
 
 The amd64 host itself no longer needs Python, FFmpeg, Node.js, GCC or PyInstaller
 for a release build; those tools live in the Debian 12 builder image. Network
@@ -258,7 +258,9 @@ Containerfile.debian12 defines the controlled amd64 release userspace.
 .containerignore keeps the Podman build context minimal; no Web Broadcaster source or binary payload is copied into the builder image.
 
 ffmpeg_build/ and soundsolution_build/ are byte-for-byte inherited from v6051.
-Web_Broadcaster_source.zip is architecture-neutral. The build script stages the
-matching native packages into a temporary source tree before compilation and
-regression testing.
+The source directory comes from the checked-out Git commit, not a ZIP.
+GitHub Actions stages only tracked application files into a clean source tree.
+The build script then copies that tree into an isolated build_work/src directory
+and stages the matching native packages before compilation and regression testing.
+There is no intermediate source archive; only the final release TAR.GZ is created.
 

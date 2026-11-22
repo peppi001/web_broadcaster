@@ -4,8 +4,8 @@ set -Eeuo pipefail
 # Web Broadcaster current self-contained Linux buildkit.
 # Script revision: build_current_linux-r1-scheduler-url-custom-metadata (amd64 + native Raspberry Pi 5).
 #
-# The buildkit contains the architecture-neutral Web Broadcaster source ZIP and
-# both architecture-specific FFmpeg SDK/runtime and SoundSolution source/runtime
+# The buildkit uses a clean source directory prepared from the current Git commit,
+# plus both architecture-specific FFmpeg SDK/runtime and SoundSolution source/runtime
 # packages. This script automatically selects exactly one native target.
 #
 # Supported release targets:
@@ -30,12 +30,11 @@ set -Eeuo pipefail
 #
 # Usage:
 #   chmod +x build.sh
-#   ./build.sh
+#   ./build.sh /path/to/clean/git-source
 
 SCRIPT_REVISION="web-broadcaster-linux-build-git-r1"
-SOURCE_ZIP="${1:-Web_Broadcaster_source.zip}"
-
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_TREE="${1:-${SCRIPT_DIR}/../source}"
 WORK_DIR="${SCRIPT_DIR}/build_work"
 VENV_DIR="${WORK_DIR}/venv"
 CHECKSUM_MANIFEST="${SCRIPT_DIR}/SHA256SUMS.txt"
@@ -89,8 +88,7 @@ require_cmd() {
 }
 
 run_amd64_in_debian12_container() {
-    local containerfile_sha current_image_sha source_host source_container relative_source
-    local -a extra_mount_args=()
+    local containerfile_sha current_image_sha source_host
 
     require_cmd podman
     require_cmd sha256sum
@@ -107,12 +105,12 @@ run_amd64_in_debian12_container() {
         sha256sum -c "$(basename -- "${CHECKSUM_MANIFEST}")"
     ) || error "Buildkit SHA-256 verification failed."
 
-    if [[ "${SOURCE_ZIP}" = /* ]]; then
-        source_host="$(readlink -f -- "${SOURCE_ZIP}")"
+    if [[ "${SOURCE_TREE}" = /* ]]; then
+        source_host="$(readlink -f -- "${SOURCE_TREE}")"
     else
-        source_host="$(readlink -f -- "${SCRIPT_DIR}/${SOURCE_ZIP}")"
+        source_host="$(readlink -f -- "${SCRIPT_DIR}/${SOURCE_TREE}")"
     fi
-    [[ -f "${source_host}" ]] || error "Source ZIP not found: ${source_host}"
+    [[ -d "${source_host}" ]] || error "Source directory not found: ${source_host}"
 
     containerfile_sha="$(sha256sum "${CONTAINERFILE_DEBIAN12}" | awk '{print $1}')"
     current_image_sha="$(podman image inspect \
@@ -130,17 +128,6 @@ run_amd64_in_debian12_container() {
         printf '%s\n' ">>> Reusing validated Debian 12 amd64 release builder image."
     fi
 
-    case "${source_host}" in
-        "${SCRIPT_DIR}"/*)
-            relative_source="${source_host#"${SCRIPT_DIR}"/}"
-            source_container="/work/${relative_source}"
-            ;;
-        *)
-            source_container="/input/Web_Broadcaster_source.zip"
-            extra_mount_args=(-v "${source_host}:${source_container}:ro")
-            ;;
-    esac
-
     printf '%s\n' ">>> Entering Debian 12 amd64 release build environment..."
     exec podman run --rm \
         --userns=keep-id \
@@ -148,10 +135,10 @@ run_amd64_in_debian12_container() {
         -e WB_DEBIAN12_CONTAINER=1 \
         -e RUN_SOURCE_TESTS="${RUN_SOURCE_TESTS}" \
         -v "${SCRIPT_DIR}:/work:rw" \
-        "${extra_mount_args[@]}" \
+        -v "${source_host}:/input/source:ro" \
         -w /work \
         "${PODMAN_IMAGE}" \
-        ./build.sh "${source_container}"
+        ./build.sh /input/source
 }
 
 extract_single_top_directory() {
@@ -190,7 +177,7 @@ verify_elf_machine() {
     esac
 }
 
-[[ $# -le 1 ]] || error "Usage: $0 [Web_Broadcaster_source.zip]"
+[[ $# -le 1 ]] || error "Usage: $0 [clean-source-directory]"
 [[ "${RUN_SOURCE_TESTS}" == "0" || "${RUN_SOURCE_TESTS}" == "1" ]] \
     || error "RUN_SOURCE_TESTS must be 0 or 1."
 [[ "$(uname -s)" == "Linux" ]] || error "This build script must run on Linux."
@@ -211,7 +198,7 @@ fi
 
 printf '%s\n' ">>> ${SCRIPT_REVISION}"
 printf '%s\n' ">>> Checking build requirements..."
-for command_name in python3 unzip tar make cc readelf ldd sha256sum find sort install file; do
+for command_name in python3 tar make cc readelf ldd sha256sum find sort install file; do
     require_cmd "${command_name}"
 done
 
@@ -288,32 +275,30 @@ printf '>>> Native target: %s (%s)\n' "${TARGET_TAG}" "${TARGET_DESCRIPTION}"
     sha256sum -c "$(basename -- "${CHECKSUM_MANIFEST}")"
 ) || error "Buildkit SHA-256 verification failed."
 
-if [[ "${SOURCE_ZIP}" = /* ]]; then
-    SOURCE_ZIP_PATH="${SOURCE_ZIP}"
+if [[ "${SOURCE_TREE}" = /* ]]; then
+    SOURCE_TREE_PATH="$(readlink -f -- "${SOURCE_TREE}")"
 else
-    SOURCE_ZIP_PATH="${SCRIPT_DIR}/${SOURCE_ZIP}"
+    SOURCE_TREE_PATH="$(readlink -f -- "${SCRIPT_DIR}/${SOURCE_TREE}")"
 fi
-[[ -f "${SOURCE_ZIP_PATH}" ]] || error "Source ZIP not found: ${SOURCE_ZIP_PATH}"
+[[ -d "${SOURCE_TREE_PATH}" ]] || error "Clean source directory not found: ${SOURCE_TREE_PATH}"
+[[ -f "${SOURCE_TREE_PATH}/app.py" ]] || error "app.py not found in source directory."
+case "${SOURCE_TREE_PATH}" in
+    "${WORK_DIR}"|"${WORK_DIR}"/*)
+        error "Source directory must not be inside the generated build_work directory."
+        ;;
+esac
 
 printf '%s\n' ">>> Cleaning previous build..."
 rm -rf -- "${WORK_DIR}"
-mkdir -p -- "${WORK_DIR}/src_zip"
+mkdir -p -- "${WORK_DIR}/src"
 
-printf '%s\n' ">>> Extracting ${SOURCE_ZIP}..."
-unzip -q "${SOURCE_ZIP_PATH}" -d "${WORK_DIR}/src_zip"
-
-SOURCE_ROOT="${WORK_DIR}/src_zip"
-TOP_COUNT="$(find "${SOURCE_ROOT}" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')"
-if [[ "${TOP_COUNT}" == "1" ]]; then
-    ONLY_ENTRY="$(find "${SOURCE_ROOT}" -mindepth 1 -maxdepth 1)"
-    if [[ -d "${ONLY_ENTRY}" ]]; then
-        SOURCE_ROOT="${ONLY_ENTRY}"
-    fi
-fi
+printf '%s\n' ">>> Copying clean Git source to isolated build directory..."
+cp -a -- "${SOURCE_TREE_PATH}/." "${WORK_DIR}/src/"
+SOURCE_ROOT="${WORK_DIR}/src"
 
 printf '%s\n' ">>> Verifying the architecture-neutral current source layout..."
-[[ -f "${SOURCE_ROOT}/app.py" ]] || error "app.py not found in extracted source."
-[[ -f "${SOURCE_ROOT}/cheroot_cleanup.py" ]] || error "cheroot_cleanup.py not found in extracted source."
+[[ -f "${SOURCE_ROOT}/app.py" ]] || error "app.py not found in copied source."
+[[ -f "${SOURCE_ROOT}/cheroot_cleanup.py" ]] || error "cheroot_cleanup.py not found in copied source."
 [[ -f "${SOURCE_ROOT}/version.txt" ]] || error "version.txt not found."
 [[ -f "${SOURCE_ROOT}/audio_engine/factory.py" ]] || error "audio_engine/factory.py not found."
 [[ -f "${SOURCE_ROOT}/audio_engine/native_engine.py" ]] || error "audio_engine/native_engine.py not found."
@@ -1644,7 +1629,7 @@ rm -f -- "${ARCHIVE_MEMBER_LIST}"
 sha256sum "$(basename -- "${OUTPUT_TAR}")" > "${OUTPUT_SHA}"
 
 printf '\nDONE\n'
-printf 'Source:   %s (architecture-neutral source)\n' "${SOURCE_ZIP_PATH}"
+printf 'Source:   %s (copied clean Git source tree)\n' "${SOURCE_TREE_PATH}"
 printf 'Version:  %s\n' "${APP_VERSION}"
 printf 'Target:   %s\n' "${TARGET_TAG}"
 printf 'Baseline: %s\n' "${BUILD_BASELINE_SUMMARY}"
