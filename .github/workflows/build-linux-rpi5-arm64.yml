@@ -89,7 +89,7 @@ jobs:
               exit 1
             }
           done
-          echo "Verified complete Web Broadcaster v${APP_VERSION} amd64 package."
+          echo "Verified complete Web Broadcaster v${APP_VERSION} Raspberry Pi 5 ARM64 package."
 
       - name: Upload deployable package
         uses: actions/upload-artifact@v4
