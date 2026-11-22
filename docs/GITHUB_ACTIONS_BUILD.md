@@ -79,3 +79,29 @@ GitHub Actions Artifacts section.
 Both amd64 and Raspberry Pi 5 ARM64 workflows run automatically after a push
 to `main` (and also during continued testing on the development branch).
 They can be launched manually with GitHub Actions `workflow_dispatch`.
+
+## Automatic GitHub Release publication
+
+The `Publish Web Broadcaster Linux Release` workflow runs when either the
+amd64 or Raspberry Pi 5 ARM64 build completes on `main` (or manually through
+`workflow_dispatch`). It uses a separate token with `actions: read` and
+`contents: write` permissions; the build workflows remain read-only.
+
+The publisher requires **both build workflows to succeed for the same Git
+commit**, checks the `app.py` version against the last `version.txt` entry,
+downloads both deployable TAR.GZ packages and matching `.sha256` files,
+verifies their hashes and archive readability, and only then publishes.
+It never mixes builds from different commits or overwrites existing release
+assets. If one build is missing or failed, nothing is published; the later
+successful build completion can trigger the publisher again.
+
+For a new version it creates a `v<APP_VERSION>` tag pointing at the tested
+`main` commit, creates a Release and attaches both archives and checksums.
+For an existing Release it uploads only missing assets and preserves any
+already published files.
+
+The existing `v6085` Release predates this CI system: its tag remains on the
+original v6085 commit, and its Buildkit ZIP is preserved. As a **one-time
+historical exception**, the publisher may attach binaries built from the
+current validated `main` v6085 commit. Future releases refuse tags pointing
+at a different commit. The application version is not automatically bumped.

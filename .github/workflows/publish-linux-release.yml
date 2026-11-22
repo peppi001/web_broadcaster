@@ -1,0 +1,47 @@
+name: Publish Web Broadcaster Linux Release
+
+on:
+  workflow_run:
+    workflows:
+      - Build Web Broadcaster (Linux amd64)
+      - Build Web Broadcaster (Raspberry Pi 5 ARM64)
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+# Builds have read-only access; publishing receives only the permissions
+# necessary to read their artifacts and write the GitHub Release.
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: web-broadcaster-linux-release-${{ github.event.workflow_run.head_sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish matching amd64 and ARM64 packages
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the exact build commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Find matching successful builds and publish verified archives
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -Eeuo pipefail
+          bash .github/scripts/publish-linux-release.sh
