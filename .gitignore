@@ -1,0 +1,13 @@
+# Generated source archives, output packages and test/build workspaces.
+.ci-build/
+buildkit/build_work/
+buildkit/Web_Broadcaster_v6085.zip
+buildkit/Web_Broadcaster_Linux_*.tar.gz
+buildkit/Web_Broadcaster_Linux_*.tar.gz.sha256
+
+# Local Python and editor artifacts.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
