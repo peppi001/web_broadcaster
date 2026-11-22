@@ -5,6 +5,10 @@ set -Eeuo pipefail
 # checked-out Git commit rather than the source ZIP shipped in the buildkit.
 # The buildkit is a pinned dependency/toolchain source, never a build output.
 
+# Actions container workspaces may be owned by the runner's host UID rather
+# than the container user. Trust only this checkout's exact workspace path.
+: "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}"
+git config --global --add safe.directory "$GITHUB_WORKSPACE"
 SOURCE_ROOT="$(git rev-parse --show-toplevel)"
 BUILD_ROOT="$SOURCE_ROOT/.ci-build"
 BUILDKIT_ARCHIVE="$BUILD_ROOT/Web_Broadcaster_v6085_buildkit.zip"
