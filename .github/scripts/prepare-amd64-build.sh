@@ -51,6 +51,34 @@ import zipfile
 
 source_archive, builder_path, checksums_path, github_env = map(Path, sys.argv[1:5])
 
+# The repository still tracks retired SVGs, old build objects and a
+# v6042-only regression test. They were deliberately omitted from the
+# validated v6085 source ZIP and must not be included in release builds.
+# Everything else comes from the exact checked-out Git commit.
+def is_retired_build_input(name: str) -> bool:
+    return (
+        name == ".github/"
+        or name.startswith(".github/")
+        or name == "html/static/icons/"
+        or name.startswith("html/static/icons/")
+        or (name.startswith("native_engine/src/") and name.endswith(".o"))
+        or name == "tests/test_v6042_deployment_modes_docs.py"
+    )
+
+filtered_archive = source_archive.with_name("source-filtered.zip")
+skipped = []
+with zipfile.ZipFile(source_archive, "r") as source:
+    with zipfile.ZipFile(filtered_archive, "w") as target:
+        for member in source.infolist():
+            if is_retired_build_input(member.filename):
+                skipped.append(member.filename)
+                continue
+            target.writestr(member, source.read(member.filename))
+filtered_archive.replace(source_archive)
+print(f"Excluded {len(skipped)} retired/CI-only paths from release input.")
+if skipped:
+    print("  " + "\n  ".join(skipped))
+
 with zipfile.ZipFile(source_archive) as source:
     app_text = source.read("app.py").decode("utf-8")
     engine_text = source.read("native_engine/include/engine.h").decode("utf-8")
