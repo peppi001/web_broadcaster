@@ -1,6 +1,7 @@
 # Git-based Web Broadcaster build dependencies
 
-All release-build inputs are versioned in this repository on the
+All release-build inputs are versioned in the repository's `main` branch.
+Changes to the build workflows are first validated on the
 `feature/github-actions-build` development branch.
 
 - `buildkit/ffmpeg_build/`: original FFmpeg 7.1.5 runtime and SDK archives
@@ -15,7 +16,7 @@ directory and isolates all build-time changes from the Git checkout.
 The only application version to edit is APP_VERSION in app.py; the native
 daemon version is injected into the staged C header during the build.
 
-On every CI run, `.github/scripts/prepare-amd64-build.sh`:
+On every CI run, `.github/scripts/prepare-git-build.sh`:
 1. Checks the committed version-independent builder and dependency archives
    against the Git-tracked SHA256 manifest.
 2. Copies the versioned buildkit into an ephemeral `.ci-build/` directory.
@@ -74,3 +75,7 @@ The ARM64 artifact is
 `Web_Broadcaster_Linux_v<APP_VERSION>_arm64_rpi5.tar.gz` with its
 `.sha256` verification file, distributed via the ARM64 workflow's
 GitHub Actions Artifacts section.
+
+Both amd64 and Raspberry Pi 5 ARM64 workflows run automatically after a push
+to `main` (and also during continued testing on the development branch).
+They can be launched manually with GitHub Actions `workflow_dispatch`.
