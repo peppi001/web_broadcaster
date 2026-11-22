@@ -139,18 +139,8 @@ PY
 )
 echo "All buildkit/toolchain and current-source checksums verified."
 
-# The validated buildkit provides its own FFmpeg 7.1.5 executable and ffprobe,
-# as well as the matching shared libraries. Use them for every source test.
-# The final package is constructed by the original builder from the same SDK
-# and runtime packages; Debian's system FFmpeg is not installed or required.
-FFMPEG_TEST_ARCHIVE="$BUILDKIT_DIR/ffmpeg_build/wb-ffmpeg-7.1.5-amd64-runtime.tar.gz"
-FFMPEG_TEST_ROOT="$BUILD_ROOT/wb-ffmpeg-7.1.5-amd64-runtime"
-test -f "$FFMPEG_TEST_ARCHIVE"
-tar -xzf "$FFMPEG_TEST_ARCHIVE" -C "$BUILD_ROOT"
-FFMPEG_TEST_BIN="$FFMPEG_TEST_ROOT/bin"
-test -x "$FFMPEG_TEST_BIN/ffmpeg"
-test -x "$FFMPEG_TEST_BIN/ffprobe"
-"$FFMPEG_TEST_BIN/ffmpeg" -version | head -n 1
-"$FFMPEG_TEST_BIN/ffprobe" -version | head -n 1
-printf '%s\n' "$FFMPEG_TEST_BIN" >> "$GITHUB_PATH"
-echo "Source regressions will use the buildkit's own FFmpeg/FFprobe 7.1.5."
+# The release builder stages its own pinned FFmpeg 7.1.5 SDK/runtime and
+# verifies the linked libraries and packaged output. Do not replace them with
+# system libraries. Debian's ffmpeg/ffprobe are used only by source tests to
+# synthesize temporary audio fixtures (the pinned runtime omits lavfi).
+echo "Release compilation uses only the pinned buildkit FFmpeg libraries."
