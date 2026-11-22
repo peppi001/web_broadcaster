@@ -283,8 +283,11 @@ fi
 [[ -d "${SOURCE_TREE_PATH}" ]] || error "Clean source directory not found: ${SOURCE_TREE_PATH}"
 [[ -f "${SOURCE_TREE_PATH}/app.py" ]] || error "app.py not found in source directory."
 case "${SOURCE_TREE_PATH}" in
+    "${WORK_DIR}/src")
+        # Exactly this pre-staged path is used by GitHub Actions.
+        ;;
     "${WORK_DIR}"|"${WORK_DIR}"/*)
-        error "Source directory must not be inside the generated build_work directory."
+        error "Only the dedicated build_work/src directory may be used as an internal source."
         ;;
 esac
 
