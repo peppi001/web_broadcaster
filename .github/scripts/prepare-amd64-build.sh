@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Stage exactly the checked-out Git sources as normal files, without an archive.
-# All modifications done by the builder remain confined to build_work/src.
+# Stage the checked-out Git sources directly in the builder's isolated src
+# directory. No intermediate ZIP or redundant second source copy is needed.
 
 : "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}"
 : "${GITHUB_ENV:?GITHUB_ENV is required}"
@@ -11,7 +11,7 @@ SOURCE_ROOT="$(git rev-parse --show-toplevel)"
 BUILD_ROOT="$SOURCE_ROOT/.ci-build"
 BUILDKIT_SOURCE="$SOURCE_ROOT/buildkit"
 BUILDKIT_DIR="$BUILD_ROOT/buildkit"
-SOURCE_DIR="$BUILD_ROOT/source"
+SOURCE_DIR="$BUILDKIT_DIR/build_work/src"
 CHECKSUMS="$BUILDKIT_DIR/SHA256SUMS.txt"
 
 for cmd in git python3 sha256sum; do
@@ -47,7 +47,7 @@ repo_root, source_dir, github_env = map(Path, sys.argv[1:4])
 repo_root = repo_root.resolve()
 source_dir.mkdir(parents=True, exist_ok=False)
 
-# Exclude CI inputs, tracked old C objects and the known retired v6085 assets.
+# Exclude CI inputs, tracked old C objects and known retired assets.
 # The actual application files are always taken from the checked-out Git HEAD.
 def exclude(path: str) -> bool:
     return (
@@ -82,16 +82,11 @@ for raw_path in paths:
 app_text = (source_dir / "app.py").read_text(encoding="utf-8")
 header_text = (source_dir / "native_engine/include/engine.h").read_text(encoding="utf-8")
 app_match = re.search(r'^APP_VERSION\s*=\s*["\'](\d+)["\']', app_text, re.MULTILINE)
-header_match = re.search(
-    r'^#define\s+WB_NATIVE_DAEMON_VERSION\s+"([^"]+)"',
-    header_text,
-    re.MULTILINE,
-)
 if not app_match:
     raise SystemExit("APP_VERSION is missing or nonnumeric in app.py")
 version = app_match.group(1)
-if not header_match or header_match.group(1) != version:
-    raise SystemExit("Native daemon version differs from app.py APP_VERSION")
+if header_text.count('#define WB_NATIVE_DAEMON_VERSION "APP_VERSION_FROM_APP_PY"') != 1:
+    raise SystemExit("Native daemon header must use the generated-version placeholder")
 if copied < 1:
     raise SystemExit("No application files were staged")
 commit = subprocess.check_output(
@@ -99,9 +94,9 @@ commit = subprocess.check_output(
 ).strip()
 with github_env.open("a", encoding="utf-8") as env:
     env.write(f"APP_VERSION={version}\n")
-    env.write(f"BUILDKIT_DIR={source_dir.parent / 'buildkit'}\n")
+    env.write(f"BUILDKIT_DIR={source_dir.parents[1]}\n")
     env.write(f"SOURCE_DIR={source_dir}\n")
-print(f"Staged {copied} tracked source files; excluded {skipped} CI/retired files.")
+print(f"Staged {copied} tracked source files directly in build_work/src; excluded {skipped} CI/retired files.")
 print(f"Web Broadcaster v{version} from Git commit {commit}; no source ZIP created.")
 PY
 

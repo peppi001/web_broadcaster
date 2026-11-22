@@ -259,8 +259,13 @@ Containerfile.debian12 defines the controlled amd64 release userspace.
 
 ffmpeg_build/ and soundsolution_build/ are byte-for-byte inherited from v6051.
 The source directory comes from the checked-out Git commit, not a ZIP.
-GitHub Actions stages only tracked application files into a clean source tree.
-The build script then copies that tree into an isolated build_work/src directory
-and stages the matching native packages before compilation and regression testing.
+GitHub Actions stages only tracked application files directly into the
+isolated build_work/src tree. The builder uses it without a second copy.
+Local builds with an external source directory still copy that source first,
+so a standalone build never modifies its original source tree.
+The builder generates the native daemon version from app.py in this staged
+working tree. The repository header contains no hard-coded app version.
+The builder then stages the matching native packages before compilation
+and regression testing.
 There is no intermediate source archive; only the final release TAR.GZ is created.
 

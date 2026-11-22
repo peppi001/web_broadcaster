@@ -12,18 +12,22 @@ All release-build inputs are versioned in this repository on the
 
 No source ZIP is created or stored. The builder accepts a clean source
 directory and isolates all build-time changes from the Git checkout.
+The only application version to edit is APP_VERSION in app.py; the native
+daemon version is injected into the staged C header during the build.
 
 On every CI run, `.github/scripts/prepare-amd64-build.sh`:
 1. Checks the committed version-independent builder and dependency archives
    against the Git-tracked SHA256 manifest.
 2. Copies the versioned buildkit into an ephemeral `.ci-build/` directory.
-3. Copies the tracked files from the checked-out Git commit into
-   `.ci-build/source/`, excluding `.github/`, `buildkit/`, retired icons,
-   old C objects and one obsolete historical test. No intermediate ZIP exists.
-4. Validates `APP_VERSION` in the copied `app.py` against the native daemon.
-5. Passes the clean source directory to `buildkit/build.sh`. The builder
-   copies it to private `build_work/src/` before running any tests or
-   PyInstaller transformations; the checked-out Git tree remains untouched.
+3. Copies the tracked Git files directly into
+   `.ci-build/buildkit/build_work/src/`, excluding `.github/`, `buildkit/`,
+   retired icons, old C objects and one obsolete historical test.
+4. Reads `APP_VERSION` from the staged `app.py`, and verifies that the source
+   native header has the expected generated-version placeholder.
+5. Passes the same source directory to `buildkit/build.sh`. No second copy is
+   made in CI. The builder generates the native daemon version in the staged
+   C header from `APP_VERSION` before compiling the C engine. Standalone
+   builds still copy externally supplied source into their isolated workdir.
 6. Runs the full Debian 12 regression suite and uploads the deployable
    TAR.GZ with its SHA256 checksum.
 
@@ -39,3 +43,8 @@ Release after verifying its overall SHA256:
 
 The previous Git-to-ZIP-to-extract path has been replaced by direct file
 copying. Only the final deployable TAR.GZ package is archived.
+
+Release versioning: edit `APP_VERSION` in `app.py` and append the appropriate
+change entry to `version.txt`. Do not edit the native C header to bump the
+version. The CI build never increments a version automatically; it validates
+and packages the version already selected in `app.py`.

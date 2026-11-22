@@ -288,13 +288,21 @@ case "${SOURCE_TREE_PATH}" in
         ;;
 esac
 
-printf '%s\n' ">>> Cleaning previous build..."
-rm -rf -- "${WORK_DIR}"
-mkdir -p -- "${WORK_DIR}/src"
-
-printf '%s\n' ">>> Copying clean Git source to isolated build directory..."
-cp -a -- "${SOURCE_TREE_PATH}/." "${WORK_DIR}/src/"
-SOURCE_ROOT="${WORK_DIR}/src"
+if [[ "${SOURCE_TREE_PATH}" == "${WORK_DIR}/src" ]]; then
+    # GitHub Actions has already staged its tracked files here. Preserve src
+    # while removing any leftover build outputs from previous invocations.
+    printf '%s\n' ">>> Using pre-staged Git source directly (no second copy)..."
+    find "${WORK_DIR}" -mindepth 1 -maxdepth 1 ! -name src -exec rm -rf -- {} +
+    SOURCE_ROOT="${SOURCE_TREE_PATH}"
+else
+    # For standalone/local builds, never modify the caller's original sources.
+    printf '%s\n' ">>> Cleaning previous build..."
+    rm -rf -- "${WORK_DIR}"
+    mkdir -p -- "${WORK_DIR}/src"
+    printf '%s\n' ">>> Copying provided source to isolated build directory..."
+    cp -a -- "${SOURCE_TREE_PATH}/." "${WORK_DIR}/src/"
+    SOURCE_ROOT="${WORK_DIR}/src"
+fi
 
 printf '%s\n' ">>> Verifying the architecture-neutral current source layout..."
 [[ -f "${SOURCE_ROOT}/app.py" ]] || error "app.py not found in copied source."
@@ -555,6 +563,25 @@ print(match.group(1).strip())
 PY
 )"
 [[ "${APP_VERSION}" =~ ^[0-9]+$ ]] || error "APP_VERSION must be numeric, got: ${APP_VERSION}"
+
+# Generate the native daemon version in the isolated source tree only.
+# app.py is the single authoritative application version source.
+python3 - "${SOURCE_ROOT}/native_engine/include/engine.h" "${APP_VERSION}" <<'PY_NATIVE_VERSION'
+from pathlib import Path
+import sys
+
+header = Path(sys.argv[1])
+version = sys.argv[2]
+source = header.read_text(encoding="utf-8")
+placeholder = '#define WB_NATIVE_DAEMON_VERSION "APP_VERSION_FROM_APP_PY"'
+if source.count(placeholder) != 1:
+    raise SystemExit("Native daemon header does not contain the expected build-time version placeholder")
+header.write_text(
+    source.replace(placeholder, f'#define WB_NATIVE_DAEMON_VERSION "{version}"', 1),
+    encoding="utf-8",
+)
+print(f"Native daemon version generated from app.py: {version}")
+PY_NATIVE_VERSION
 
 DAEMON_VERSION="$(python3 - "${SOURCE_ROOT}/native_engine/include/engine.h" <<'PY'
 from pathlib import Path
